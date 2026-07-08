@@ -78,3 +78,11 @@ def test_empty_graph_passes_validation():
 
     assert graph.nodes == []
     assert graph.edges == []
+
+
+def test_node_and_edge_chunk_ids_default_empty():
+    node = Node(id="python", label="Python", type="Language")
+    edge = Edge(id="e1", source="python", target="python", label="self")
+
+    assert node.chunk_ids == []
+    assert edge.chunk_ids == []

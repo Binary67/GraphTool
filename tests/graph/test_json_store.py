@@ -36,6 +36,32 @@ def test_save_writes_valid_json_with_nodes_and_edges(tmp_path):
     assert data["metadata"]["source"] == "doc.md"
 
 
+def test_save_writes_node_and_edge_chunk_ids(tmp_path):
+    store = JsonGraphStore(tmp_path)
+    graph = KnowledgeGraph(
+        nodes=[Node(id="a", label="A", type="Concept", chunk_ids=["doc-chunk-0000"])],
+        edges=[
+            Edge(
+                id="e1",
+                source="a",
+                target="a",
+                label="relates_to",
+                chunk_ids=["doc-chunk-0000"],
+            )
+        ],
+        metadata=GraphMetadata(
+            source="doc.md",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+    store.save(graph)
+
+    data = json.loads((tmp_path / "doc.json").read_text())
+    assert data["nodes"][0]["chunk_ids"] == ["doc-chunk-0000"]
+    assert data["edges"][0]["chunk_ids"] == ["doc-chunk-0000"]
+
+
 def test_load_roundtrips_saved_graph(tmp_path):
     store = JsonGraphStore(tmp_path)
     original = _sample_graph("doc.md")

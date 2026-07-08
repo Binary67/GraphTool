@@ -9,6 +9,7 @@ class Node(BaseModel):
     label: str
     type: str
     properties: dict[str, Any] = Field(default_factory=dict)
+    chunk_ids: list[str] = Field(default_factory=list)
 
 
 class Edge(BaseModel):
@@ -17,6 +18,7 @@ class Edge(BaseModel):
     target: str
     label: str
     properties: dict[str, Any] = Field(default_factory=dict)
+    chunk_ids: list[str] = Field(default_factory=list)
 
 
 class GraphMetadata(BaseModel):
