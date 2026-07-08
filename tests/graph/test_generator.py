@@ -1,8 +1,14 @@
 from datetime import datetime, timezone
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
+from graphtool.graph.generator import (
+    _ExtractedEdge,
+    _ExtractedKnowledgeGraph,
+    _ExtractedNode,
+    combine_knowledge_graphs,
+    generate_knowledge_graph,
+)
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 
@@ -10,7 +16,7 @@ T = TypeVar("T")
 
 
 class FakeLLM:
-    def __init__(self, responses: list[KnowledgeGraph]) -> None:
+    def __init__(self, responses: list[_ExtractedKnowledgeGraph]) -> None:
         self.responses = responses
         self.calls: list[tuple[list[LLMMessage], type]] = []
 
@@ -19,7 +25,7 @@ class FakeLLM:
 
     def generate_structured(self, messages, response_model: type[T]) -> T:
         self.calls.append((list(messages), response_model))
-        return self.responses[len(self.calls) - 1]
+        return cast(T, self.responses[len(self.calls) - 1])
 
 
 def _chunk(
@@ -37,8 +43,15 @@ def _chunk(
     )
 
 
+def _extracted_graph(
+    nodes: list[_ExtractedNode] | None = None,
+    edges: list[_ExtractedEdge] | None = None,
+) -> _ExtractedKnowledgeGraph:
+    return _ExtractedKnowledgeGraph(nodes=nodes or [], edges=edges or [])
+
+
 def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
-    fake = FakeLLM([KnowledgeGraph(nodes=[], edges=[]), KnowledgeGraph(nodes=[], edges=[])])
+    fake = FakeLLM([_extracted_graph(), _extracted_graph()])
     chunks = [
         _chunk("doc-chunk-0000", 0),
         _chunk("doc-chunk-0001", 1, "## Pydantic\nValidation.", ["Python", "Pydantic"]),
@@ -48,7 +61,7 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
 
     assert len(fake.calls) == 2
     messages, response_model = fake.calls[0]
-    assert response_model is KnowledgeGraph
+    assert response_model is _ExtractedKnowledgeGraph
     assert messages[0].role == "system"
     assert "knowledge graph" in messages[0].content
     assert messages[1].role == "user"
@@ -59,7 +72,7 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
 
 
 def test_generate_knowledge_graph_attaches_metadata():
-    fake = FakeLLM([KnowledgeGraph(nodes=[], edges=[])])
+    fake = FakeLLM([_extracted_graph()])
 
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
@@ -71,9 +84,16 @@ def test_generate_knowledge_graph_attaches_metadata():
 def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
     fake = FakeLLM(
         [
-            KnowledgeGraph(
-                nodes=[Node(id="python", label="Python", type="Language")],
-                edges=[Edge(id="e1", source="python", target="python", label="self")],
+            _extracted_graph(
+                nodes=[_ExtractedNode(id="python", label="Python", type="Language")],
+                edges=[
+                    _ExtractedEdge(
+                        id="e1",
+                        source="python",
+                        target="python",
+                        label="self",
+                    )
+                ],
             )
         ]
     )
@@ -88,13 +108,13 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
 def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
     fake = FakeLLM(
         [
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(id="python", label="Python", type="Language"),
-                    Node(id="pydantic", label="Pydantic", type="Library"),
+                    _ExtractedNode(id="python", label="Python", type="Language"),
+                    _ExtractedNode(id="pydantic", label="Pydantic", type="Library"),
                 ],
                 edges=[
-                    Edge(
+                    _ExtractedEdge(
                         id="first-edge",
                         source="pydantic",
                         target="python",
@@ -102,13 +122,13 @@ def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
                     )
                 ],
             ),
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(id="python", label="Python 3", type="Version"),
-                    Node(id="pydantic", label="Pydantic", type="Library"),
+                    _ExtractedNode(id="python", label="Python 3", type="Version"),
+                    _ExtractedNode(id="pydantic", label="Pydantic", type="Library"),
                 ],
                 edges=[
-                    Edge(
+                    _ExtractedEdge(
                         id="second-edge",
                         source="pydantic",
                         target="python",
@@ -133,6 +153,14 @@ def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000", "doc-chunk-0001"]
+
+
+def test_extracted_knowledge_graph_schema_is_strict_for_openai():
+    schema = _ExtractedKnowledgeGraph.model_json_schema()
+
+    assert "properties" not in _ExtractedNode.model_json_schema()["properties"]
+    assert "properties" not in _ExtractedEdge.model_json_schema()["properties"]
+    assert not _has_additional_properties_true(schema)
 
 
 def test_combine_knowledge_graphs_merges_multiple_document_graphs():
@@ -184,3 +212,15 @@ def test_combine_knowledge_graphs_merges_multiple_document_graphs():
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["first-chunk-0000", "second-chunk-0000"]
+
+
+def _has_additional_properties_true(value) -> bool:
+    if isinstance(value, dict):
+        return any(
+            (key == "additionalProperties" and child is True)
+            or _has_additional_properties_true(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_has_additional_properties_true(child) for child in value)
+    return False

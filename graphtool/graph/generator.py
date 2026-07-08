@@ -1,6 +1,8 @@
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
+from pydantic import BaseModel, ConfigDict
+
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.base import LLMClient
@@ -9,8 +11,7 @@ from graphtool.llm.types import LLMMessage
 SYSTEM_PROMPT = (
     "You extract knowledge graphs from text. Identify the key entities as nodes "
     "and the relationships between them as edges. Every edge must reference "
-    "existing node ids. Return only the structured knowledge graph. "
-    "Leave the metadata field empty."
+    "existing node ids. Return only the structured nodes and edges."
 )
 
 USER_PROMPT_TEMPLATE = (
@@ -20,6 +21,30 @@ USER_PROMPT_TEMPLATE = (
     "Heading path: {heading_path}\n\n"
     "{markdown}"
 )
+
+
+class _ExtractedNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str
+    type: str
+
+
+class _ExtractedEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    source: str
+    target: str
+    label: str
+
+
+class _ExtractedKnowledgeGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[_ExtractedNode]
+    edges: list[_ExtractedEdge]
 
 
 def generate_knowledge_graph(
@@ -53,17 +78,24 @@ def _generate_chunk_graph(chunk: Chunk, llm: LLMClient) -> KnowledgeGraph:
             ),
         ),
     ]
-    graph = llm.generate_structured(messages, KnowledgeGraph)
+    graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
     return KnowledgeGraph(
         nodes=[
-            node.model_copy(
-                update={"chunk_ids": _append_unique(node.chunk_ids, chunk.id)}
+            Node(
+                id=node.id,
+                label=node.label,
+                type=node.type,
+                chunk_ids=[chunk.id],
             )
             for node in graph.nodes
         ],
         edges=[
-            edge.model_copy(
-                update={"chunk_ids": _append_unique(edge.chunk_ids, chunk.id)}
+            Edge(
+                id=edge.id,
+                source=edge.source,
+                target=edge.target,
+                label=edge.label,
+                chunk_ids=[chunk.id],
             )
             for edge in graph.edges
         ],
@@ -105,12 +137,6 @@ def combine_knowledge_graphs(graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph
         for index, edge in enumerate(edges_by_key.values(), start=1)
     ]
     return KnowledgeGraph(nodes=list(nodes_by_id.values()), edges=edges)
-
-
-def _append_unique(values: list[str], value: str) -> list[str]:
-    if value in values:
-        return list(values)
-    return [*values, value]
 
 
 def _extend_unique(values: list[str], additions: list[str]) -> list[str]:
