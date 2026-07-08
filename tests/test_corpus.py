@@ -9,10 +9,11 @@ from graphtool.corpus import (
     filter_unprocessed_sources,
     ingest_unprocessed_documents,
     load_markdown_documents,
+    rebuild_knowledge_base,
     search_knowledge_base,
 )
-from graphtool.graph.json_store import JsonGraphStore
-from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node
+from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 from graphtool.source import source_key
 
@@ -54,6 +55,38 @@ def _graph(source: str, chunk: Chunk, node_id: str, label: str) -> KnowledgeGrap
             )
         ],
         edges=[],
+        metadata=GraphMetadata(
+            source=source,
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+
+def _relationship_graph(source: str, chunk_id: str) -> KnowledgeGraph:
+    return KnowledgeGraph(
+        nodes=[
+            Node(
+                id="graphtool",
+                label="GraphTool",
+                type="Project",
+                chunk_ids=[chunk_id],
+            ),
+            Node(
+                id="azure-openai",
+                label="Azure OpenAI",
+                type="Service",
+                chunk_ids=[chunk_id],
+            ),
+        ],
+        edges=[
+            Edge(
+                id="edge-0001",
+                source="graphtool",
+                target="azure-openai",
+                label="uses",
+                chunk_ids=[chunk_id],
+            )
+        ],
         metadata=GraphMetadata(
             source=source,
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
@@ -158,6 +191,112 @@ def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
     assert len(fake.calls) == 1
     assert graph_store.exists("docs/pending.md") is True
     assert chunk_store.load("docs/pending.md")
+
+
+def test_ingest_unprocessed_documents_updates_cached_knowledge_base_with_exact_dedupe(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    existing_graph = _relationship_graph("docs/existing.md", "existing-chunk-0000")
+    graph_store.save(existing_graph)
+    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    fake = FakeLLM(
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="graphtool", label="GraphTool", type="Project"),
+                    Node(id="azure-openai", label="Azure OpenAI", type="Service"),
+                ],
+                edges=[
+                    Edge(
+                        id="llm-edge",
+                        source="graphtool",
+                        target="azure-openai",
+                        label="uses",
+                    )
+                ],
+            )
+        ]
+    )
+    new_source = "docs/new.md"
+    new_chunk_id = f"{source_key(new_source)}-chunk-0000"
+
+    ingest_unprocessed_documents(
+        {new_source: "# GraphTool\nUses Azure OpenAI."},
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    graph = knowledge_base_store.load()
+    assert len(graph.nodes) == 2
+    assert graph.nodes[0].chunk_ids == ["existing-chunk-0000", new_chunk_id]
+    assert len(graph.edges) == 1
+    assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].chunk_ids == ["existing-chunk-0000", new_chunk_id]
+
+
+def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    processed_chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
+    graph_store.save(
+        _graph("docs/processed.md", processed_chunk, "processed", "Processed")
+    )
+    fake = FakeLLM(
+        [
+            KnowledgeGraph(
+                nodes=[Node(id="pending", label="Pending", type="Concept")],
+                edges=[],
+            )
+        ]
+    )
+
+    ingest_unprocessed_documents(
+        {"docs/pending.md": "# Pending\nNeeds validation."},
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    graph = knowledge_base_store.load()
+    assert {node.id for node in graph.nodes} == {"processed", "pending"}
+
+
+def test_search_knowledge_base_uses_cached_graph_when_available(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    chunk = _chunk("docs/cached.md", "# Ordinary\nPlain text.", "Ordinary")
+    chunk_store.save("docs/cached.md", [chunk])
+    graph_store.save(_graph("docs/cached.md", chunk, "stored", "Stored"))
+    knowledge_base_store.save(
+        KnowledgeGraph(
+            nodes=[
+                Node(
+                    id="cached",
+                    label="cacheonly",
+                    type="Concept",
+                    chunk_ids=[chunk.id],
+                )
+            ],
+            edges=[],
+        )
+    )
+
+    result = search_knowledge_base(
+        "cacheonly",
+        graph_store,
+        chunk_store,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    assert [hit.node.id for hit in result.node_hits] == ["cached"]
 
 
 def test_search_knowledge_base_raises_when_saved_graph_has_no_chunks(tmp_path):

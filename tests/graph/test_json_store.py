@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 
-from graphtool.graph.json_store import JsonGraphStore
+from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.source import source_key
 
@@ -136,3 +136,18 @@ def test_save_uses_source_path_in_filename(tmp_path):
     assert (tmp_path / f"{source_key('docs/api/guide.md')}.json").exists()
     assert (tmp_path / f"{source_key('docs/user/guide.md')}.json").exists()
     assert len(list(tmp_path.glob("*.json"))) == 2
+
+
+def test_knowledge_base_store_roundtrips_metadata_less_graph(tmp_path):
+    store = JsonKnowledgeBaseStore(tmp_path / "nested" / "knowledge_base.json")
+    graph = KnowledgeGraph(
+        nodes=[Node(id="a", label="A", type="Concept")],
+        edges=[Edge(id="edge-0001", source="a", target="a", label="relates_to")],
+    )
+
+    store.save(graph)
+    loaded = store.load()
+
+    assert store.exists() is True
+    assert loaded == graph
+    assert (tmp_path / "nested" / "knowledge_base.json").exists()

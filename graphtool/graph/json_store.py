@@ -37,3 +37,21 @@ class JsonGraphStore:
 
     def _path_for(self, name: str) -> Path:
         return self._directory / f"{source_key(name)}.json"
+
+
+class JsonKnowledgeBaseStore:
+    """Filesystem-backed combined knowledge graph store using a single JSON file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+
+    def save(self, graph: KnowledgeGraph) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(graph.model_dump_json(indent=2))
+
+    def load(self) -> KnowledgeGraph:
+        data = json.loads(self._path.read_text())
+        return KnowledgeGraph.model_validate(data)
+
+    def exists(self) -> bool:
+        return self._path.exists()

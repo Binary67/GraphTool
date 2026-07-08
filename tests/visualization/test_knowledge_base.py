@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from graphtool.graph.json_store import JsonGraphStore
+from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node
 from graphtool.source import source_key
 from graphtool.visualization import export_knowledge_base_visualizations
@@ -64,6 +64,29 @@ def test_export_knowledge_base_visualizations_writes_documents_and_combined_grap
     combined_html = expected_paths[-1].read_text()
     assert "Alpha" in combined_html
     assert "Beta" in combined_html
+
+
+def test_export_knowledge_base_visualizations_uses_cached_combined_graph(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    graph_store.save(_graph("documents/a.md", "alpha", "Alpha"))
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    knowledge_base_store.save(
+        KnowledgeGraph(
+            nodes=[Node(id="cached", label="Cached Only", type="Concept")],
+            edges=[],
+        )
+    )
+    output_dir = tmp_path / "visualizations"
+
+    paths = export_knowledge_base_visualizations(
+        graph_store,
+        output_dir,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    combined_html = paths[-1].read_text()
+    assert "Cached Only" in combined_html
+    assert '"id": "alpha"' not in combined_html
 
 
 def test_export_knowledge_base_visualizations_raises_for_missing_metadata(tmp_path):

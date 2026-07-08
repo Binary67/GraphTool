@@ -7,7 +7,7 @@ from graphtool.corpus import (
     load_markdown_documents,
     search_knowledge_base,
 )
-from graphtool.graph import JsonGraphStore
+from graphtool.graph import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.llm import AzureOpenAIClient, load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
 from graphtool.visualization import export_knowledge_base_visualizations
@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 DOCUMENTS_DIR = ROOT / "documents"
 CHUNKS_DIR = ROOT / "data" / "chunks"
 GRAPHS_DIR = ROOT / "data" / "graphs"
+KNOWLEDGE_BASE_PATH = ROOT / "data" / "knowledge_base.json"
 LOGS_DIR = ROOT / "logs"
 VISUALIZATIONS_DIR = ROOT / "data" / "visualizations"
 MAX_LOG_FILES = 3
@@ -28,6 +29,7 @@ def main() -> None:
 
     try:
         graph_store = JsonGraphStore(GRAPHS_DIR)
+        knowledge_base_store = JsonKnowledgeBaseStore(KNOWLEDGE_BASE_PATH)
         chunk_store = JsonChunkStore(CHUNKS_DIR)
         documents = load_markdown_documents(DOCUMENTS_DIR, source_root=ROOT)
         logger.info("Loaded %s markdown documents", len(documents))
@@ -46,6 +48,7 @@ def main() -> None:
                 graph_store,
                 chunk_store,
                 llm,
+                knowledge_base_store=knowledge_base_store,
             )
             logger.info("Finished ingesting documents")
         else:
@@ -55,11 +58,17 @@ def main() -> None:
         visualization_paths = export_knowledge_base_visualizations(
             graph_store,
             VISUALIZATIONS_DIR,
+            knowledge_base_store=knowledge_base_store,
         )
         logger.info("Exported %s visualizations", len(visualization_paths))
 
         logger.info("Searching knowledge base")
-        result = search_knowledge_base(QUERY, graph_store, chunk_store)
+        result = search_knowledge_base(
+            QUERY,
+            graph_store,
+            chunk_store,
+            knowledge_base_store=knowledge_base_store,
+        )
         logger.info("Search completed with %s sources", len(result.sources))
 
         print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")
