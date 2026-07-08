@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# User-uploaded markdown inputs and generated knowledge graphs
+data/
+output/
