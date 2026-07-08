@@ -16,3 +16,8 @@ documents/**
 !documents/.gitkeep
 data/
 output/
+
+# Per-run logs
+logs/**
+!logs/
+!logs/.gitkeep
