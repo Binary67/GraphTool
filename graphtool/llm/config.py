@@ -17,7 +17,7 @@ class AzureOpenAIConfig:
 
 
 def load_azure_openai_config() -> AzureOpenAIConfig:
-    load_dotenv()
+    load_dotenv(override=True)
 
     names = [
         "AZURE_OPENAI_ENDPOINT",
