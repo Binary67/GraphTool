@@ -4,13 +4,13 @@ from graphtool.chunking import JsonChunkStore
 from graphtool.corpus import (
     filter_unprocessed_sources,
     ingest_unprocessed_documents,
+    load_markdown_documents,
     search_knowledge_base,
 )
-from graphtool.graph import JsonGraphStore, combine_knowledge_graphs
+from graphtool.graph import JsonGraphStore
 from graphtool.llm import AzureOpenAIClient, load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
-from graphtool.source import source_key
-from graphtool.visualization import export_graph_html
+from graphtool.visualization import export_knowledge_base_visualizations
 
 ROOT = Path(__file__).resolve().parent
 DOCUMENTS_DIR = ROOT / "documents"
@@ -18,10 +18,8 @@ CHUNKS_DIR = ROOT / "data" / "chunks"
 GRAPHS_DIR = ROOT / "data" / "graphs"
 LOGS_DIR = ROOT / "logs"
 VISUALIZATIONS_DIR = ROOT / "data" / "visualizations"
-DOCUMENT_VISUALIZATIONS_DIR = VISUALIZATIONS_DIR / "documents"
-KNOWLEDGE_BASE_VISUALIZATION_PATH = VISUALIZATIONS_DIR / "knowledge_graph.html"
 MAX_LOG_FILES = 3
-QUERY = "What does the knowledge base say about validation?"
+QUERY = "What can Claude Code do?"
 
 
 def main() -> None:
@@ -31,7 +29,7 @@ def main() -> None:
     try:
         graph_store = JsonGraphStore(GRAPHS_DIR)
         chunk_store = JsonChunkStore(CHUNKS_DIR)
-        documents = _load_markdown_documents(DOCUMENTS_DIR)
+        documents = load_markdown_documents(DOCUMENTS_DIR, source_root=ROOT)
         logger.info("Loaded %s markdown documents", len(documents))
 
         unprocessed_sources = filter_unprocessed_sources(documents, graph_store)
@@ -54,7 +52,10 @@ def main() -> None:
             logger.info("No documents require ingestion")
 
         logger.info("Exporting visualizations")
-        visualization_paths = _export_visualizations(graph_store)
+        visualization_paths = export_knowledge_base_visualizations(
+            graph_store,
+            VISUALIZATIONS_DIR,
+        )
         logger.info("Exported %s visualizations", len(visualization_paths))
 
         logger.info("Searching knowledge base")
@@ -73,42 +74,6 @@ def main() -> None:
     except Exception:
         logger.exception("Run failed")
         raise
-
-
-def _export_visualizations(graph_store: JsonGraphStore) -> list[Path]:
-    graphs = graph_store.load_all()
-    paths = []
-
-    for graph in graphs:
-        if graph.metadata is None:
-            raise ValueError("Cannot visualize graph without metadata.source.")
-
-        paths.append(
-            export_graph_html(
-                graph,
-                DOCUMENT_VISUALIZATIONS_DIR
-                / f"{source_key(graph.metadata.source)}.html",
-            )
-        )
-
-    paths.append(
-        export_graph_html(
-            combine_knowledge_graphs(graphs),
-            KNOWLEDGE_BASE_VISUALIZATION_PATH,
-        )
-    )
-    return paths
-
-
-def _load_markdown_documents(directory: Path) -> dict[str, str]:
-    if not directory.exists():
-        return {}
-
-    documents = {}
-    for path in sorted(directory.rglob("*.md")):
-        source = path.relative_to(ROOT).as_posix()
-        documents[source] = path.read_text()
-    return documents
 
 
 if __name__ == "__main__":

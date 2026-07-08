@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.markdown import chunk_markdown
@@ -8,6 +9,23 @@ from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
 from graphtool.retrieval.retriever import retrieve_context
 from graphtool.retrieval.types import RetrievalResult
+
+
+def load_markdown_documents(
+    directory: str | Path,
+    *,
+    source_root: str | Path,
+) -> dict[str, str]:
+    path = Path(directory)
+    if not path.exists():
+        return {}
+
+    root = Path(source_root)
+    documents = {}
+    for markdown_path in sorted(path.rglob("*.md")):
+        source = markdown_path.relative_to(root).as_posix()
+        documents[source] = markdown_path.read_text()
+    return documents
 
 
 def search_knowledge_base(
