@@ -40,11 +40,11 @@ def retrieve_context(
     )
     chunk_hits = _retrieve_chunks(query, chunks_by_id, node_hits, relationship_hits)
     chunk_hits = chunk_hits[:top_chunks]
-    source = graph.metadata.source if graph.metadata is not None else ""
+    sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
 
     return RetrievalResult(
         query=query,
-        source=source,
+        sources=sources,
         node_hits=node_hits,
         relationship_hits=relationship_hits,
         chunks=chunk_hits,

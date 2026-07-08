@@ -1,7 +1,7 @@
 import re
-from pathlib import Path
 
 from graphtool.chunking.types import Chunk
+from graphtool.source import source_key
 
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
@@ -16,13 +16,13 @@ def chunk_markdown(
 
     sections = _split_sections(markdown)
     chunks: list[Chunk] = []
-    source_stem = Path(source).stem
+    key = source_key(source)
 
     for section_text, heading_path in sections:
         for text in _split_text(section_text, max_chars):
             chunks.append(
                 Chunk(
-                    id=f"{source_stem}-chunk-{len(chunks):04d}",
+                    id=f"{key}-chunk-{len(chunks):04d}",
                     source=source,
                     index=len(chunks),
                     text=text,

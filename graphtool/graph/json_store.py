@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from graphtool.graph.types import KnowledgeGraph
+from graphtool.source import source_key
 
 
 class JsonGraphStore:
@@ -23,6 +24,16 @@ class JsonGraphStore:
         data = json.loads(path.read_text())
         return KnowledgeGraph.model_validate(data)
 
+    def exists(self, source: str) -> bool:
+        return self._path_for(source).exists()
+
+    def load_all(self) -> list[KnowledgeGraph]:
+        if not self._directory.exists():
+            return []
+        return [
+            KnowledgeGraph.model_validate(json.loads(path.read_text()))
+            for path in sorted(self._directory.glob("*.json"))
+        ]
+
     def _path_for(self, name: str) -> Path:
-        stem = Path(name).stem
-        return self._directory / f"{stem}.json"
+        return self._directory / f"{source_key(name)}.json"

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from graphtool.graph.json_store import JsonGraphStore
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
+from graphtool.source import source_key
 
 
 def _sample_graph(source: str = "doc.md") -> KnowledgeGraph:
@@ -21,7 +22,7 @@ def test_save_creates_json_file(tmp_path):
 
     store.save(_sample_graph("doc.md"))
 
-    expected = tmp_path / "doc.json"
+    expected = tmp_path / f"{source_key('doc.md')}.json"
     assert expected.exists()
 
 
@@ -30,7 +31,7 @@ def test_save_writes_valid_json_with_nodes_and_edges(tmp_path):
 
     store.save(_sample_graph("doc.md"))
 
-    data = json.loads((tmp_path / "doc.json").read_text())
+    data = json.loads((tmp_path / f"{source_key('doc.md')}.json").read_text())
     assert data["nodes"][0]["id"] == "a"
     assert data["edges"][0]["source"] == "a"
     assert data["metadata"]["source"] == "doc.md"
@@ -57,7 +58,7 @@ def test_save_writes_node_and_edge_chunk_ids(tmp_path):
 
     store.save(graph)
 
-    data = json.loads((tmp_path / "doc.json").read_text())
+    data = json.loads((tmp_path / f"{source_key('doc.md')}.json").read_text())
     assert data["nodes"][0]["chunk_ids"] == ["doc-chunk-0000"]
     assert data["edges"][0]["chunk_ids"] == ["doc-chunk-0000"]
 
@@ -96,4 +97,42 @@ def test_save_creates_directory_if_missing(tmp_path):
 
     store.save(_sample_graph("doc.md"))
 
-    assert (tmp_path / "nested" / "graphs" / "doc.json").exists()
+    assert (
+        tmp_path / "nested" / "graphs" / f"{source_key('doc.md')}.json"
+    ).exists()
+
+
+def test_exists_returns_true_only_for_saved_source(tmp_path):
+    store = JsonGraphStore(tmp_path)
+
+    store.save(_sample_graph("doc.md"))
+
+    assert store.exists("doc.md") is True
+    assert store.exists("missing.md") is False
+
+
+def test_load_all_returns_saved_graphs_in_filename_order(tmp_path):
+    store = JsonGraphStore(tmp_path)
+    first = _sample_graph("docs/api/guide.md")
+    second = _sample_graph("docs/user/guide.md")
+
+    store.save(first)
+    store.save(second)
+
+    loaded = store.load_all()
+
+    assert sorted(graph.metadata.source for graph in loaded if graph.metadata) == [
+        "docs/api/guide.md",
+        "docs/user/guide.md",
+    ]
+
+
+def test_save_uses_source_path_in_filename(tmp_path):
+    store = JsonGraphStore(tmp_path)
+
+    store.save(_sample_graph("docs/api/guide.md"))
+    store.save(_sample_graph("docs/user/guide.md"))
+
+    assert (tmp_path / f"{source_key('docs/api/guide.md')}.json").exists()
+    assert (tmp_path / f"{source_key('docs/user/guide.md')}.json").exists()
+    assert len(list(tmp_path.glob("*.json"))) == 2

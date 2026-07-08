@@ -28,7 +28,7 @@ def generate_knowledge_graph(
     llm: LLMClient,
 ) -> KnowledgeGraph:
     graphs = [_generate_chunk_graph(chunk, llm) for chunk in chunks]
-    graph = _merge_graphs(graphs)
+    graph = combine_knowledge_graphs(graphs)
     return graph.model_copy(
         update={
             "metadata": GraphMetadata(
@@ -70,7 +70,7 @@ def _generate_chunk_graph(chunk: Chunk, llm: LLMClient) -> KnowledgeGraph:
     )
 
 
-def _merge_graphs(graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
+def combine_knowledge_graphs(graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
     nodes_by_id: dict[str, Node] = {}
     edges_by_key: dict[tuple[str, str, str], Edge] = {}
 

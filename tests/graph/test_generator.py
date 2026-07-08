@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import TypeVar
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.generator import generate_knowledge_graph
+from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 
@@ -133,3 +133,54 @@ def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000", "doc-chunk-0001"]
+
+
+def test_combine_knowledge_graphs_merges_multiple_document_graphs():
+    graph = combine_knowledge_graphs(
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="python",
+                        label="Python",
+                        type="Language",
+                        chunk_ids=["first-chunk-0000"],
+                    )
+                ],
+                edges=[
+                    Edge(
+                        id="first-edge",
+                        source="python",
+                        target="python",
+                        label="mentions",
+                        chunk_ids=["first-chunk-0000"],
+                    )
+                ],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="python",
+                        label="Python 3",
+                        type="Version",
+                        chunk_ids=["second-chunk-0000"],
+                    )
+                ],
+                edges=[
+                    Edge(
+                        id="second-edge",
+                        source="python",
+                        target="python",
+                        label="mentions",
+                        chunk_ids=["second-chunk-0000"],
+                    )
+                ],
+            ),
+        ]
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].chunk_ids == ["first-chunk-0000", "second-chunk-0000"]
+    assert len(graph.edges) == 1
+    assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].chunk_ids == ["first-chunk-0000", "second-chunk-0000"]

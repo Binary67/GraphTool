@@ -27,7 +27,7 @@ class ChunkHit(BaseModel):
 
 class RetrievalResult(BaseModel):
     query: str
-    source: str
+    sources: list[str]
     node_hits: list[NodeHit]
     relationship_hits: list[RelationshipHit]
     chunks: list[ChunkHit]

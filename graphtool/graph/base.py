@@ -13,3 +13,11 @@ class KnowledgeGraphStore(Protocol):
     def load(self, name: str) -> KnowledgeGraph:
         """Load a knowledge graph by name."""
         ...
+
+    def exists(self, source: str) -> bool:
+        """Return whether a graph has been persisted for source."""
+        ...
+
+    def load_all(self) -> list[KnowledgeGraph]:
+        """Load all persisted knowledge graphs."""
+        ...

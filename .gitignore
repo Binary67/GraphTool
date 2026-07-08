@@ -11,5 +11,8 @@ wheels/
 .env
 
 # User-uploaded markdown inputs and generated knowledge graphs
+documents/**
+!documents/
+!documents/.gitkeep
 data/
 output/

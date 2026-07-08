@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from graphtool.chunking.types import Chunk
+from graphtool.source import source_key
 
 
 class JsonChunkStore:
@@ -30,5 +31,4 @@ class JsonChunkStore:
         ]
 
     def _path_for(self, source: str) -> Path:
-        stem = Path(source).stem
-        return self._directory / f"{stem}.json"
+        return self._directory / f"{source_key(source)}.json"

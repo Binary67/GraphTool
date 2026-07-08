@@ -138,6 +138,7 @@ def test_retrieve_context_boosts_chunks_linked_by_nodes_and_edges():
     top_chunk = result.chunks[0]
 
     assert top_chunk.chunk.id == "doc-chunk-0001"
+    assert result.sources == ["doc.md"]
     assert "pydantic" in top_chunk.linked_node_ids
     assert "edge-0001" in top_chunk.linked_edge_ids
 
@@ -181,6 +182,7 @@ def test_retrieve_context_returns_empty_hits_for_no_matches():
     assert result.node_hits == []
     assert result.relationship_hits == []
     assert result.chunks == []
+    assert result.sources == []
     assert "Relevant nodes:\n- None" in result.context_text
     assert "Relevant relationships:\n- None" in result.context_text
     assert "Evidence:\n- None" in result.context_text
