@@ -14,6 +14,10 @@ class AzureOpenAIClient:
         self._config = config
         self._client = OpenAI(base_url=config.endpoint, api_key=config.api_key)
 
+    @property
+    def embedding_model(self) -> str:
+        return self._config.embedding_model
+
     def generate_text(self, messages: Sequence[LLMMessage]) -> LLMTextResponse:
         response = self._client.responses.create(
             model=self._config.model,
@@ -38,6 +42,13 @@ class AzureOpenAIClient:
         )
 
         return response.output_parsed
+
+    def embed_text(self, text: str) -> list[float]:
+        response = self._client.embeddings.create(
+            model=self._config.embedding_model,
+            input=text,
+        )
+        return list(response.data[0].embedding)
 
 
 def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, str]]:

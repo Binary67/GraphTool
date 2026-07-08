@@ -7,7 +7,12 @@ from graphtool.corpus import (
     load_markdown_documents,
     search_knowledge_base,
 )
-from graphtool.graph import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph import (
+    JsonEmbeddingStore,
+    JsonGraphEmbeddingStore,
+    JsonGraphStore,
+    JsonKnowledgeBaseStore,
+)
 from graphtool.llm import AzureOpenAIClient, load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
 from graphtool.visualization import export_knowledge_base_visualizations
@@ -16,7 +21,10 @@ ROOT = Path(__file__).resolve().parent
 DOCUMENTS_DIR = ROOT / "documents"
 CHUNKS_DIR = ROOT / "data" / "chunks"
 GRAPHS_DIR = ROOT / "data" / "graphs"
+GRAPH_EMBEDDINGS_DIR = ROOT / "data" / "graph_embeddings"
 KNOWLEDGE_BASE_PATH = ROOT / "data" / "knowledge_base.json"
+KNOWLEDGE_BASE_EMBEDDINGS_PATH = ROOT / "data" / "knowledge_base_embeddings.json"
+DROPPED_EDGES_PATH = ROOT / "data" / "dropped_edges.jsonl"
 LOGS_DIR = ROOT / "logs"
 VISUALIZATIONS_DIR = ROOT / "data" / "visualizations"
 MAX_LOG_FILES = 3
@@ -30,6 +38,10 @@ def main() -> None:
     try:
         graph_store = JsonGraphStore(GRAPHS_DIR)
         knowledge_base_store = JsonKnowledgeBaseStore(KNOWLEDGE_BASE_PATH)
+        graph_embedding_store = JsonGraphEmbeddingStore(GRAPH_EMBEDDINGS_DIR)
+        knowledge_base_embedding_store = JsonEmbeddingStore(
+            KNOWLEDGE_BASE_EMBEDDINGS_PATH
+        )
         chunk_store = JsonChunkStore(CHUNKS_DIR)
         documents = load_markdown_documents(DOCUMENTS_DIR, source_root=ROOT)
         logger.info("Loaded %s markdown documents", len(documents))
@@ -49,6 +61,9 @@ def main() -> None:
                 chunk_store,
                 llm,
                 knowledge_base_store=knowledge_base_store,
+                graph_embedding_store=graph_embedding_store,
+                knowledge_base_embedding_store=knowledge_base_embedding_store,
+                dropped_edges_path=DROPPED_EDGES_PATH,
             )
             logger.info("Finished ingesting documents")
         else:

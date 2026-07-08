@@ -12,6 +12,7 @@ def test_loads_azure_openai_config(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
 
     config = load_azure_openai_config()
 
@@ -19,6 +20,7 @@ def test_loads_azure_openai_config(monkeypatch):
     assert config.endpoint == endpoint
     assert config.api_key == "test-key"
     assert config.model == "test-deployment"
+    assert config.embedding_model == "embedding-deployment"
 
 
 def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
@@ -27,6 +29,7 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_MODEL", raising=False)
 
     with pytest.raises(ConfigError) as exc_info:
         load_azure_openai_config()
@@ -36,3 +39,4 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     assert "AZURE_OPENAI_ENDPOINT" in message
     assert "AZURE_OPENAI_API_KEY" in message
     assert "AZURE_OPENAI_MODEL" in message
+    assert "AZURE_OPENAI_EMBEDDING_MODEL" in message

@@ -1,6 +1,11 @@
 import json
 from datetime import datetime, timezone
 
+from graphtool.graph.embedding_store import (
+    JsonEmbeddingStore,
+    JsonGraphEmbeddingStore,
+    NodeEmbeddingRecord,
+)
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.source import source_key
@@ -61,6 +66,30 @@ def test_save_writes_node_and_edge_chunk_ids(tmp_path):
     data = json.loads((tmp_path / f"{source_key('doc.md')}.json").read_text())
     assert data["nodes"][0]["chunk_ids"] == ["doc-chunk-0000"]
     assert data["edges"][0]["chunk_ids"] == ["doc-chunk-0000"]
+
+
+def test_save_writes_node_aliases(tmp_path):
+    store = JsonGraphStore(tmp_path)
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="openai",
+                label="OpenAI",
+                type="Organization",
+                aliases=["OpenAI organization"],
+            )
+        ],
+        edges=[],
+        metadata=GraphMetadata(
+            source="doc.md",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+    store.save(graph)
+
+    data = json.loads((tmp_path / f"{source_key('doc.md')}.json").read_text())
+    assert data["nodes"][0]["aliases"] == ["OpenAI organization"]
 
 
 def test_load_roundtrips_saved_graph(tmp_path):
@@ -151,3 +180,34 @@ def test_knowledge_base_store_roundtrips_metadata_less_graph(tmp_path):
     assert store.exists() is True
     assert loaded == graph
     assert (tmp_path / "nested" / "knowledge_base.json").exists()
+
+
+def test_embedding_store_roundtrips_records(tmp_path):
+    store = JsonEmbeddingStore(tmp_path / "embeddings.json")
+    record = NodeEmbeddingRecord(
+        node_id="openai",
+        embedding_model="embedding-model",
+        embedding_input_hash="hash",
+        vector=[0.1, 0.2],
+    )
+
+    store.save({"openai": record})
+
+    assert store.exists() is True
+    assert store.load() == {"openai": record}
+
+
+def test_graph_embedding_store_uses_source_path(tmp_path):
+    store = JsonGraphEmbeddingStore(tmp_path)
+    record = NodeEmbeddingRecord(
+        node_id="openai",
+        embedding_model="embedding-model",
+        embedding_input_hash="hash",
+        vector=[0.1],
+    )
+
+    store.save("docs/openai.md", {"openai": record})
+
+    assert store.exists("docs/openai.md") is True
+    assert store.load("docs/openai.md") == {"openai": record}
+    assert (tmp_path / f"{source_key('docs/openai.md')}.json").exists()

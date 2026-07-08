@@ -3,8 +3,10 @@ from pathlib import Path
 
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.markdown import chunk_markdown
+from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
 from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.resolver import SemanticEntityResolver
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
 from graphtool.retrieval.retriever import retrieve_context
@@ -71,6 +73,9 @@ def ingest_unprocessed_documents(
     *,
     max_chars: int = 3000,
     knowledge_base_store: JsonKnowledgeBaseStore | None = None,
+    graph_embedding_store: JsonGraphEmbeddingStore | None = None,
+    knowledge_base_embedding_store: JsonEmbeddingStore | None = None,
+    dropped_edges_path: Path | None = None,
 ) -> list[KnowledgeGraph]:
     graphs = []
     for source, markdown in documents.items():
@@ -79,16 +84,38 @@ def ingest_unprocessed_documents(
 
         chunks = chunk_markdown(markdown, source, max_chars=max_chars)
         chunk_store.save(source, chunks)
-        graph = generate_knowledge_graph(chunks, source, llm)
+        resolver = _make_semantic_resolver(
+            llm,
+            graph_embedding_store,
+            source=source,
+        )
+        graph = generate_knowledge_graph(
+            chunks,
+            source,
+            llm,
+            resolver=resolver,
+            dropped_edges_path=dropped_edges_path,
+        )
         graph_store.save(graph)
         graphs.append(graph)
 
     if graphs and knowledge_base_store is not None:
+        resolver = _make_semantic_resolver(
+            llm,
+            knowledge_base_embedding_store,
+        )
         if knowledge_base_store.exists():
-            graph = combine_knowledge_graphs([knowledge_base_store.load(), *graphs])
+            graph = _combine_knowledge_graphs(
+                [knowledge_base_store.load(), *graphs],
+                resolver,
+            )
             knowledge_base_store.save(graph)
         else:
-            rebuild_knowledge_base(graph_store, knowledge_base_store)
+            rebuild_knowledge_base(
+                graph_store,
+                knowledge_base_store,
+                resolver=resolver,
+            )
 
     return graphs
 
@@ -96,8 +123,10 @@ def ingest_unprocessed_documents(
 def rebuild_knowledge_base(
     graph_store: JsonGraphStore,
     knowledge_base_store: JsonKnowledgeBaseStore,
+    *,
+    resolver: SemanticEntityResolver | None = None,
 ) -> KnowledgeGraph:
-    graph = combine_knowledge_graphs(graph_store.load_all())
+    graph = _combine_knowledge_graphs(graph_store.load_all(), resolver)
     knowledge_base_store.save(graph)
     return graph
 
@@ -114,3 +143,44 @@ def _load_or_rebuild_knowledge_base(
     graph = combine_knowledge_graphs(graphs)
     knowledge_base_store.save(graph)
     return graph
+
+
+def _combine_knowledge_graphs(
+    graphs: list[KnowledgeGraph],
+    resolver: SemanticEntityResolver | None,
+) -> KnowledgeGraph:
+    if resolver is None:
+        return combine_knowledge_graphs(graphs)
+    return resolver.combine(graphs)
+
+
+def _make_semantic_resolver(
+    llm: LLMClient,
+    graph_embedding_store: JsonGraphEmbeddingStore | JsonEmbeddingStore | None,
+    *,
+    source: str | None = None,
+) -> SemanticEntityResolver | None:
+    if not hasattr(llm, "embed_text") or not hasattr(llm, "embedding_model"):
+        return None
+
+    embedding_store = None
+    if isinstance(graph_embedding_store, JsonGraphEmbeddingStore):
+        if source is None:
+            raise ValueError("source is required for per-document graph embeddings.")
+        embedding_store = _SourceEmbeddingStore(graph_embedding_store, source)
+    else:
+        embedding_store = graph_embedding_store
+
+    return SemanticEntityResolver(llm, llm, embedding_store)
+
+
+class _SourceEmbeddingStore:
+    def __init__(self, store: JsonGraphEmbeddingStore, source: str) -> None:
+        self._store = store
+        self._source = source
+
+    def load(self):
+        return self._store.load(self._source)
+
+    def save(self, records):
+        self._store.save(self._source, records)

@@ -20,3 +20,16 @@ class LLMClient(Protocol):
     ) -> T:
         """Generate a structured response parsed into response_model."""
         ...
+
+
+class EmbeddingClient(Protocol):
+    """Common interface implemented by embedding providers."""
+
+    @property
+    def embedding_model(self) -> str:
+        """Return the embedding model identifier."""
+        ...
+
+    def embed_text(self, text: str) -> list[float]:
+        """Embed a single text value."""
+        ...

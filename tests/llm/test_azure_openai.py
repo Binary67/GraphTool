@@ -26,6 +26,7 @@ class FakeOpenAI:
         self.base_url = base_url
         self.api_key = api_key
         self.responses = FakeResponses()
+        self.embeddings = FakeEmbeddings()
         FakeOpenAI.instances.append(self)
 
 
@@ -39,6 +40,19 @@ class FakeStructuredResponse:
     output_parsed = {"name": "Ada"}
 
 
+class FakeEmbeddings:
+    def __init__(self):
+        self.create_calls = []
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return FakeEmbeddingResponse()
+
+
+class FakeEmbeddingResponse:
+    data = [type("Embedding", (), {"embedding": [0.1, 0.2, 0.3]})()]
+
+
 class Person(BaseModel):
     name: str
 
@@ -50,6 +64,7 @@ def test_constructs_openai_client_with_exact_config(monkeypatch):
         endpoint="https://example.openai.azure.com/openai/v1/",
         api_key="test-key",
         model="test-deployment",
+        embedding_model="embedding-deployment",
     )
 
     AzureOpenAIClient(config)
@@ -66,6 +81,7 @@ def test_generate_text_uses_responses_create(monkeypatch):
         endpoint="https://example.openai.azure.com/openai/v1/",
         api_key="test-key",
         model="test-deployment",
+        embedding_model="embedding-deployment",
     )
     client = AzureOpenAIClient(config)
 
@@ -97,6 +113,7 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
         endpoint="https://example.openai.azure.com/openai/v1/",
         api_key="test-key",
         model="test-deployment",
+        embedding_model="embedding-deployment",
     )
     client = AzureOpenAIClient(config)
 
@@ -113,5 +130,28 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
                 {"role": "user", "content": "Extract the person."},
             ],
             "text_format": Person,
+        }
+    ]
+
+
+def test_embed_text_uses_embeddings_create(monkeypatch):
+    FakeOpenAI.instances = []
+    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
+    config = AzureOpenAIConfig(
+        endpoint="https://example.openai.azure.com/openai/v1/",
+        api_key="test-key",
+        model="test-deployment",
+        embedding_model="embedding-deployment",
+    )
+    client = AzureOpenAIClient(config)
+
+    embedding = client.embed_text("OpenAI organization")
+
+    assert client.embedding_model == "embedding-deployment"
+    assert embedding == [0.1, 0.2, 0.3]
+    assert FakeOpenAI.instances[0].embeddings.create_calls == [
+        {
+            "model": "embedding-deployment",
+            "input": "OpenAI organization",
         }
     ]

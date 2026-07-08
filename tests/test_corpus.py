@@ -13,6 +13,8 @@ from graphtool.corpus import (
     search_knowledge_base,
 )
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
+from graphtool.graph.resolver import EntityResolutionDecision
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 from graphtool.source import source_key
@@ -31,6 +33,46 @@ class FakeLLM:
     def generate_structured(self, messages, response_model: type[T]) -> T:
         self.calls.append((list(messages), response_model))
         return self.responses[len(self.calls) - 1]
+
+
+class FakeSemanticLLM:
+    embedding_model = "fake-embedding-model"
+
+    def __init__(
+        self,
+        responses: list[KnowledgeGraph],
+        decisions: list[EntityResolutionDecision],
+        vectors: dict[str, list[float]],
+    ) -> None:
+        self.responses = responses
+        self.decisions = decisions
+        self.vectors = vectors
+        self.calls: list[tuple[list[LLMMessage], type]] = []
+        self.embedding_calls: list[str] = []
+        self._response_index = 0
+        self._decision_index = 0
+
+    def generate_text(self, messages):
+        raise NotImplementedError
+
+    def generate_structured(self, messages, response_model: type[T]) -> T:
+        self.calls.append((list(messages), response_model))
+        if response_model is EntityResolutionDecision:
+            decision = self.decisions[self._decision_index]
+            self._decision_index += 1
+            return decision
+
+        response = self.responses[self._response_index]
+        self._response_index += 1
+        return response
+
+    def embed_text(self, text: str) -> list[float]:
+        self.embedding_calls.append(text)
+        label_line = text.splitlines()[0] if text else ""
+        for key, vector in self.vectors.items():
+            if key in label_line:
+                return vector
+        return [0.0, 1.0]
 
 
 def _chunk(source: str, text: str, heading: str) -> Chunk:
@@ -237,6 +279,108 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_with_exact_d
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["existing-chunk-0000", new_chunk_id]
+
+
+def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    graph_embedding_store = JsonGraphEmbeddingStore(tmp_path / "graph_embeddings")
+    knowledge_base_embedding_store = JsonEmbeddingStore(
+        tmp_path / "knowledge_base_embeddings.json"
+    )
+    existing_chunk_id = "existing-chunk-0000"
+    existing_graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="openai",
+                label="OpenAI",
+                type="Organization",
+                chunk_ids=[existing_chunk_id],
+            ),
+            Node(
+                id="chatgpt",
+                label="ChatGPT",
+                type="Product",
+                chunk_ids=[existing_chunk_id],
+            ),
+        ],
+        edges=[
+            Edge(
+                id="edge-0001",
+                source="openai",
+                target="chatgpt",
+                label="develops",
+                chunk_ids=[existing_chunk_id],
+            )
+        ],
+        metadata=GraphMetadata(
+            source="docs/existing.md",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+    graph_store.save(existing_graph)
+    knowledge_base_store.save(existing_graph)
+    fake = FakeSemanticLLM(
+        responses=[
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="openai-organization",
+                        label="OpenAI organization",
+                        type="Organization",
+                    ),
+                    Node(id="chatgpt", label="ChatGPT", type="Product"),
+                ],
+                edges=[
+                    Edge(
+                        id="new-edge",
+                        source="openai-organization",
+                        target="chatgpt",
+                        label="develops",
+                    )
+                ],
+            )
+        ],
+        decisions=[
+            EntityResolutionDecision(
+                decision="merge",
+                target_node_id="openai",
+                confidence=0.95,
+            )
+        ],
+        vectors={
+            "OpenAI organization": [1.0, 0.0],
+            "OpenAI": [1.0, 0.0],
+            "ChatGPT": [0.0, 1.0],
+        },
+    )
+    new_source = "docs/new.md"
+    new_chunk_id = f"{source_key(new_source)}-chunk-0000"
+
+    ingest_unprocessed_documents(
+        {new_source: "# OpenAI organization\nDevelops ChatGPT."},
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+    )
+
+    graph = knowledge_base_store.load()
+    assert {node.id for node in graph.nodes} == {"openai", "chatgpt"}
+    openai = next(node for node in graph.nodes if node.id == "openai")
+    assert openai.aliases == ["OpenAI organization"]
+    assert openai.chunk_ids == [existing_chunk_id, new_chunk_id]
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source == "openai"
+    assert graph.edges[0].target == "chatgpt"
+    assert graph.edges[0].chunk_ids == [existing_chunk_id, new_chunk_id]
+    assert graph_embedding_store.exists(new_source) is True
+    assert knowledge_base_embedding_store.exists() is True
 
 
 def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_path):

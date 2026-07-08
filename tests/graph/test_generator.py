@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timezone
+from logging import Logger
 from typing import TypeVar, cast
 
 from graphtool.chunking.types import Chunk
@@ -11,6 +13,7 @@ from graphtool.graph.generator import (
 )
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
+from graphtool.run_logging import configure_run_logger
 
 T = TypeVar("T")
 
@@ -103,6 +106,94 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
     assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000"]
+
+
+def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp_path):
+    dropped_edges_path = tmp_path / "dropped_edges.jsonl"
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(id="python", label="Python", type="Language"),
+                    _ExtractedNode(id="pydantic", label="Pydantic", type="Library"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="valid-edge",
+                        source="pydantic",
+                        target="python",
+                        label="built_for",
+                    ),
+                    _ExtractedEdge(
+                        id="missing-edge",
+                        source="pydantic",
+                        target="missing-node",
+                        label="mentions",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    graph = generate_knowledge_graph(
+        [_chunk()],
+        "doc.md",
+        fake,
+        dropped_edges_path=dropped_edges_path,
+    )
+
+    assert len(graph.edges) == 1
+    assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].source == "pydantic"
+    assert graph.edges[0].target == "python"
+
+    records = [
+        json.loads(line)
+        for line in dropped_edges_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["source"] == "doc.md"
+    assert records[0]["chunk_id"] == "doc-chunk-0000"
+    assert records[0]["edge_id"] == "missing-edge"
+    assert records[0]["label"] == "mentions"
+    assert records[0]["edge_source"] == "pydantic"
+    assert records[0]["edge_target"] == "missing-node"
+    assert records[0]["missing"] == ["target"]
+    assert records[0]["created_at"]
+
+
+def test_generate_knowledge_graph_logs_dropped_edges_to_run_log(tmp_path):
+    logger = configure_run_logger(tmp_path / "logs")
+    try:
+        fake = FakeLLM(
+            [
+                _extracted_graph(
+                    nodes=[
+                        _ExtractedNode(id="python", label="Python", type="Language"),
+                    ],
+                    edges=[
+                        _ExtractedEdge(
+                            id="missing-edge",
+                            source="python",
+                            target="missing-node",
+                            label="mentions",
+                        )
+                    ],
+                )
+            ]
+        )
+
+        generate_knowledge_graph([_chunk()], "doc.md", fake)
+        _flush_logger(logger)
+
+        log_files = list((tmp_path / "logs").glob("graphtool-*.log"))
+        assert len(log_files) == 1
+        assert (
+            "WARNING Skipped extracted edge missing-edge in doc-chunk-0000: "
+            "missing target node missing-node"
+        ) in log_files[0].read_text(encoding="utf-8")
+    finally:
+        _close_logger(logger)
 
 
 def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
@@ -224,3 +315,14 @@ def _has_additional_properties_true(value) -> bool:
     if isinstance(value, list):
         return any(_has_additional_properties_true(child) for child in value)
     return False
+
+
+def _flush_logger(logger: Logger) -> None:
+    for handler in logger.handlers:
+        handler.flush()
+
+
+def _close_logger(logger: Logger) -> None:
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()

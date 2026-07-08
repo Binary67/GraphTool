@@ -14,6 +14,7 @@ class AzureOpenAIConfig:
     endpoint: str
     api_key: str
     model: str
+    embedding_model: str
 
 
 def load_azure_openai_config() -> AzureOpenAIConfig:
@@ -23,6 +24,7 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_MODEL",
+        "AZURE_OPENAI_EMBEDDING_MODEL",
     ]
     values = {name: os.getenv(name) for name in names}
     missing = [name for name, value in values.items() if not value]
@@ -35,4 +37,5 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
         endpoint=cast(str, values["AZURE_OPENAI_ENDPOINT"]),
         api_key=cast(str, values["AZURE_OPENAI_API_KEY"]),
         model=cast(str, values["AZURE_OPENAI_MODEL"]),
+        embedding_model=cast(str, values["AZURE_OPENAI_EMBEDDING_MODEL"]),
     )
