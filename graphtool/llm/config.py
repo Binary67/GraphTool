@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 from typing import cast
@@ -5,7 +6,11 @@ from typing import cast
 from dotenv import load_dotenv
 
 DEFAULT_EMBEDDING_BATCH_SIZE = 4
+DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY = 0.80
 EMBEDDING_BATCH_SIZE_ENV = "AZURE_OPENAI_EMBEDDING_BATCH_SIZE"
+ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV = (
+    "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY"
+)
 
 
 class ConfigError(ValueError):
@@ -19,6 +24,9 @@ class AzureOpenAIConfig:
     model: str
     embedding_model: str
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
+    entity_resolution_min_candidate_similarity: float = (
+        DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY
+    )
 
 
 def load_azure_openai_config() -> AzureOpenAIConfig:
@@ -43,6 +51,11 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
         model=cast(str, values["AZURE_OPENAI_MODEL"]),
         embedding_model=cast(str, values["AZURE_OPENAI_EMBEDDING_MODEL"]),
         embedding_batch_size=_embedding_batch_size(os.getenv(EMBEDDING_BATCH_SIZE_ENV)),
+        entity_resolution_min_candidate_similarity=(
+            _entity_resolution_min_candidate_similarity(
+                os.getenv(ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV)
+            )
+        ),
     )
 
 
@@ -61,3 +74,22 @@ def _embedding_batch_size(value: str | None) -> int:
         raise ConfigError(f"{EMBEDDING_BATCH_SIZE_ENV} must be a positive integer")
 
     return batch_size
+
+
+def _entity_resolution_min_candidate_similarity(value: str | None) -> float:
+    if value is None or value.strip() == "":
+        return DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY
+
+    try:
+        similarity = float(value)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV} must be between 0.0 and 1.0"
+        ) from exc
+
+    if not math.isfinite(similarity) or similarity < 0.0 or similarity > 1.0:
+        raise ConfigError(
+            f"{ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV} must be between 0.0 and 1.0"
+        )
+
+    return similarity

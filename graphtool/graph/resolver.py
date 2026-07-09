@@ -14,7 +14,7 @@ from graphtool.llm.types import LLMMessage
 
 DEFAULT_TOP_K = 10
 DEFAULT_MERGE_CONFIDENCE_THRESHOLD = 0.80
-DEFAULT_MIN_CANDIDATE_SIMILARITY = 0.70
+DEFAULT_MIN_CANDIDATE_SIMILARITY = 0.80
 
 ENTITY_RESOLUTION_SYSTEM_PROMPT = (
     "You decide whether a new knowledge graph node refers to the same real-world "
@@ -172,7 +172,8 @@ class SemanticEntityResolver:
         node: Node,
         canonical_nodes: Sequence[Node],
     ) -> list[tuple[Node, float]]:
-        if not canonical_nodes:
+        candidate_nodes = _same_type_candidates(node, canonical_nodes)
+        if not candidate_nodes:
             return []
 
         incoming_text = node_embedding_text(
@@ -180,9 +181,9 @@ class SemanticEntityResolver:
             self._relationship_contexts.get(node.id, []),
         )
         incoming_vector = self._embedding_client.embed_texts([incoming_text])[0]
-        candidate_records = self._ensure_embeddings(canonical_nodes)
+        candidate_records = self._ensure_embeddings(candidate_nodes)
         scored = []
-        for candidate, record in zip(canonical_nodes, candidate_records, strict=True):
+        for candidate, record in zip(candidate_nodes, candidate_records, strict=True):
             score = _cosine_similarity(incoming_vector, record.vector)
             if score >= self._min_candidate_similarity:
                 scored.append((candidate, score))
@@ -346,6 +347,15 @@ def _find_normalized_match(node: Node, canonical_nodes: Sequence[Node]) -> Node 
         if incoming_names & _normalized_names(candidate):
             return candidate
     return None
+
+
+def _same_type_candidates(node: Node, canonical_nodes: Sequence[Node]) -> list[Node]:
+    incoming_type = _normalize_name(node.type)
+    return [
+        candidate
+        for candidate in canonical_nodes
+        if incoming_type == _normalize_name(candidate.type)
+    ]
 
 
 def _normalized_names(node: Node) -> set[str]:

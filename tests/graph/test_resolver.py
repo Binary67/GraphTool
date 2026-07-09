@@ -246,6 +246,35 @@ def test_resolver_keeps_related_entities_separate_when_llm_rejects_merge():
     assert {node.id for node in graph.nodes} == {"openai", "openai-api"}
 
 
+def test_resolver_skips_embedding_candidates_with_different_types():
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient(
+        {
+            "OpenAI API": [1.0, 0.0],
+            "OpenAI": [1.0, 0.0],
+        }
+    )
+    resolver = SemanticEntityResolver(llm, embedding)
+
+    graph = resolver.combine(
+        [
+            KnowledgeGraph(
+                nodes=[Node(id="openai", label="OpenAI", type="Organization")],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[Node(id="openai-api", label="OpenAI API", type="Service")],
+                edges=[],
+            ),
+        ]
+    )
+
+    assert {node.id for node in graph.nodes} == {"openai", "openai-api"}
+    assert llm.calls == []
+    assert embedding.calls == []
+    assert embedding.batch_calls == []
+
+
 def test_resolver_reuses_matching_cached_embeddings(tmp_path):
     embedding = FakeEmbeddingClient({"OpenAI": [1.0, 0.0]})
     store = JsonEmbeddingStore(tmp_path / "embeddings.json")
@@ -364,18 +393,8 @@ def test_combine_into_resolves_only_new_nodes_against_existing(tmp_path):
     assert {node.id for node in graph.nodes} == {"openai", "chatgpt", "anthropic", "claude"}
     assert llm.calls == []
 
-    full_combine_embedding = FakeEmbeddingClient(
-        {
-            "OpenAI": [1.0, 0.0, 0.0, 0.0],
-            "ChatGPT": [0.0, 1.0, 0.0, 0.0],
-            "Anthropic": [0.0, 0.0, 1.0, 0.0],
-            "Claude": [0.0, 0.0, 0.0, 1.0],
-        }
-    )
-    full_combine = SemanticEntityResolver(FakeLLM(), full_combine_embedding)
-    full_combine.combine([existing, *new_graphs])
-
-    assert len(embedding.calls) < len(full_combine_embedding.calls)
+    assert not any("label: OpenAI" in call for call in embedding.calls)
+    assert not any("label: ChatGPT" in call for call in embedding.calls)
 
 
 def test_combine_into_preserves_existing_edges_and_appends_new_edges():

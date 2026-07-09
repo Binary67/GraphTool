@@ -6,7 +6,10 @@ from graphtool.chunking.markdown import chunk_markdown
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
 from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
-from graphtool.graph.resolver import SemanticEntityResolver
+from graphtool.graph.resolver import (
+    DEFAULT_MIN_CANDIDATE_SIMILARITY,
+    SemanticEntityResolver,
+)
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
 from graphtool.retrieval.retriever import retrieve_context
@@ -76,6 +79,7 @@ def ingest_unprocessed_documents(
     graph_embedding_store: JsonGraphEmbeddingStore | None = None,
     knowledge_base_embedding_store: JsonEmbeddingStore | None = None,
     dropped_edges_path: Path | None = None,
+    min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
 ) -> list[KnowledgeGraph]:
     graphs = []
     for source, markdown in documents.items():
@@ -88,6 +92,7 @@ def ingest_unprocessed_documents(
             llm,
             graph_embedding_store,
             source=source,
+            min_candidate_similarity=min_candidate_similarity,
         )
         graph = generate_knowledge_graph(
             chunks,
@@ -103,6 +108,7 @@ def ingest_unprocessed_documents(
         resolver = _make_semantic_resolver(
             llm,
             knowledge_base_embedding_store,
+            min_candidate_similarity=min_candidate_similarity,
         )
         if knowledge_base_store.exists():
             existing = knowledge_base_store.load()
@@ -161,6 +167,7 @@ def _make_semantic_resolver(
     graph_embedding_store: JsonGraphEmbeddingStore | JsonEmbeddingStore | None,
     *,
     source: str | None = None,
+    min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
 ) -> SemanticEntityResolver | None:
     if (
         not hasattr(llm, "embed_text")
@@ -177,7 +184,12 @@ def _make_semantic_resolver(
     else:
         embedding_store = graph_embedding_store
 
-    return SemanticEntityResolver(llm, llm, embedding_store)
+    return SemanticEntityResolver(
+        llm,
+        llm,
+        embedding_store,
+        min_candidate_similarity=min_candidate_similarity,
+    )
 
 
 class _SourceEmbeddingStore:

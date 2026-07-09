@@ -51,7 +51,8 @@ def main() -> None:
 
         if unprocessed_sources:
             logger.info("Ingesting %s documents", len(unprocessed_sources))
-            llm = AzureOpenAIClient(load_azure_openai_config())
+            config = load_azure_openai_config()
+            llm = AzureOpenAIClient(config)
             ingest_unprocessed_documents(
                 {
                     source: documents[source]
@@ -64,6 +65,9 @@ def main() -> None:
                 graph_embedding_store=graph_embedding_store,
                 knowledge_base_embedding_store=knowledge_base_embedding_store,
                 dropped_edges_path=DROPPED_EDGES_PATH,
+                min_candidate_similarity=(
+                    config.entity_resolution_min_candidate_similarity
+                ),
             )
             logger.info("Finished ingesting documents")
         else:

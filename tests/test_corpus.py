@@ -391,6 +391,100 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
     assert knowledge_base_embedding_store.exists() is True
 
 
+def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolvers(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    graph_embedding_store = JsonGraphEmbeddingStore(tmp_path / "graph_embeddings")
+    knowledge_base_embedding_store = JsonEmbeddingStore(
+        tmp_path / "knowledge_base_embeddings.json"
+    )
+    existing_graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="openai",
+                label="OpenAI",
+                type="Organization",
+                chunk_ids=["existing-chunk-0000"],
+            )
+        ],
+        edges=[],
+        metadata=GraphMetadata(
+            source="docs/existing.md",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+    graph_store.save(existing_graph)
+    knowledge_base_store.save(existing_graph)
+    fake = FakeSemanticLLM(
+        responses=[
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="openai-organization",
+                        label="OpenAI organization",
+                        type="Organization",
+                    )
+                ],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="openai-company",
+                        label="OpenAI company",
+                        type="Organization",
+                    )
+                ],
+                edges=[],
+            ),
+        ],
+        decisions=[],
+        vectors={
+            "OpenAI organization": [0.9, 0.1],
+            "OpenAI company": [0.8, 0.2],
+            "OpenAI": [1.0, 0.0],
+        },
+    )
+    new_source = "docs/new.md"
+
+    ingest_unprocessed_documents(
+        {
+            new_source: (
+                "# OpenAI organization\nFirst mention.\n\n"
+                "# OpenAI company\nSecond mention."
+            )
+        },
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+        min_candidate_similarity=1.0,
+    )
+
+    document_graph = graph_store.load(new_source)
+    knowledge_base = knowledge_base_store.load()
+
+    assert {node.id for node in document_graph.nodes} == {
+        "openai-organization",
+        "openai-company",
+    }
+    assert {node.id for node in knowledge_base.nodes} == {
+        "openai",
+        "openai-organization",
+        "openai-company",
+    }
+    assert [
+        response_model
+        for _, response_model in fake.calls
+        if response_model is EntityResolutionDecision
+    ] == []
+
+
 def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
