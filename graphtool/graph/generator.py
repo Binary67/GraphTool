@@ -139,15 +139,28 @@ def generate_knowledge_graph(
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
 ) -> KnowledgeGraph:
-    generated_chunks = [
-        _generate_chunk_graph(
+    generated_chunks = []
+    taxonomy_suggestion_records = []
+    for chunk in chunks:
+        generated = _generate_chunk_graph(
             chunk,
             llm,
             dropped_edges_path=dropped_edges_path,
-            taxonomy_suggestion_store=taxonomy_suggestion_store,
         )
-        for chunk in chunks
-    ]
+        generated_chunks.append(generated)
+        if taxonomy_suggestion_store is not None:
+            taxonomy_suggestion_records.extend(
+                make_taxonomy_suggestion_records(
+                    nodes=generated.graph.nodes,
+                    source=chunk.source,
+                    chunk_id=chunk.id,
+                    model=_llm_model(llm),
+                )
+            )
+
+    if taxonomy_suggestion_store is not None and taxonomy_suggestion_records:
+        taxonomy_suggestion_store.append_many(taxonomy_suggestion_records)
+
     graphs = [generated.graph for generated in generated_chunks]
     graph = (
         resolver.combine(graphs)
@@ -171,7 +184,6 @@ def _generate_chunk_graph(
     llm: LLMClient,
     *,
     dropped_edges_path: Path | None = None,
-    taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
 ) -> _GeneratedChunkGraph:
     messages: Sequence[LLMMessage] = [
         LLMMessage(role="system", content=SYSTEM_PROMPT),
@@ -186,15 +198,6 @@ def _generate_chunk_graph(
     graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
     structural_node_ids = _structural_node_ids(graph.nodes, chunk)
     nodes = _dedupe_chunk_nodes(graph.nodes, structural_node_ids, chunk)
-    if taxonomy_suggestion_store is not None:
-        taxonomy_suggestion_store.append_many(
-            make_taxonomy_suggestion_records(
-                nodes=nodes,
-                source=chunk.source,
-                chunk_id=chunk.id,
-                model=_llm_model(llm),
-            )
-        )
     node_ids = {node.id for node in nodes}
     edges_by_key: dict[tuple[str, str, str], Edge] = {}
     for edge in graph.edges:

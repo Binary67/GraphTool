@@ -35,6 +35,14 @@ class FakeLLM:
         return cast(T, self.responses[len(self.calls) - 1])
 
 
+class RecordingTaxonomySuggestionStore:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def append_many(self, records) -> None:
+        self.calls.append(list(records))
+
+
 def _chunk(
     chunk_id: str = "doc-chunk-0000",
     index: int = 0,
@@ -562,6 +570,53 @@ def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
     assert records[0].source == "doc.md"
     assert records[0].chunk_id == "doc-chunk-0000"
     assert records[0].created_at
+
+
+def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
+    suggestion_store = RecordingTaxonomySuggestionStore()
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(
+                        id="marketplace",
+                        label="Marketplace",
+                        type="unclassified",
+                        suggested_type="distribution channel",
+                    )
+                ],
+            ),
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(
+                        id="registry",
+                        label="Registry",
+                        type="unclassified",
+                        suggested_type="distribution channel",
+                    )
+                ],
+            ),
+        ]
+    )
+    chunks = [
+        _chunk("doc-chunk-0000", 0),
+        _chunk("doc-chunk-0001", 1, "## Registry\nIndex.", ["Python", "Registry"]),
+    ]
+
+    generate_knowledge_graph(
+        chunks,
+        "doc.md",
+        fake,
+        taxonomy_suggestion_store=suggestion_store,
+    )
+
+    assert len(suggestion_store.calls) == 1
+    records = suggestion_store.calls[0]
+    assert [record.node_id for record in records] == ["marketplace", "registry"]
+    assert [record.chunk_id for record in records] == [
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+    ]
 
 
 def test_combine_knowledge_graphs_merges_multiple_document_graphs():
