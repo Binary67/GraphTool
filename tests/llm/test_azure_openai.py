@@ -33,7 +33,7 @@ class FakeOpenAI:
 class FakeTextResponse:
     output_text = "hello"
     id = "response-123"
-    model = "test-deployment"
+    model = "text-deployment"
 
 
 class FakeStructuredResponse:
@@ -68,17 +68,24 @@ class Person(BaseModel):
     name: str
 
 
+def _config(**overrides):
+    values = {
+        "endpoint": "https://example.openai.azure.com/openai/v1/",
+        "api_key": "test-key",
+        "flagship_deployment": "flagship-deployment",
+        "fast_deployment": "fast-deployment",
+        "embedding_deployment": "embedding-deployment",
+    }
+    values.update(overrides)
+    return AzureOpenAIConfig(**values)
+
+
 def test_constructs_openai_client_with_exact_config(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = AzureOpenAIConfig(
-        endpoint="https://example.openai.azure.com/openai/v1/",
-        api_key="test-key",
-        model="test-deployment",
-        embedding_model="embedding-deployment",
-    )
+    config = _config()
 
-    AzureOpenAIClient(config)
+    AzureOpenAIClient(config, text_deployment=config.fast_deployment)
 
     assert len(FakeOpenAI.instances) == 1
     assert FakeOpenAI.instances[0].base_url == config.endpoint
@@ -88,13 +95,8 @@ def test_constructs_openai_client_with_exact_config(monkeypatch):
 def test_generate_text_uses_responses_create(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = AzureOpenAIConfig(
-        endpoint="https://example.openai.azure.com/openai/v1/",
-        api_key="test-key",
-        model="test-deployment",
-        embedding_model="embedding-deployment",
-    )
-    client = AzureOpenAIClient(config)
+    config = _config()
+    client = AzureOpenAIClient(config, text_deployment="text-deployment")
 
     response = client.generate_text(
         [
@@ -105,10 +107,10 @@ def test_generate_text_uses_responses_create(monkeypatch):
 
     assert response.content == "hello"
     assert response.response_id == "response-123"
-    assert response.model == "test-deployment"
+    assert response.model == "text-deployment"
     assert FakeOpenAI.instances[0].responses.create_calls == [
         {
-            "model": "test-deployment",
+            "model": "text-deployment",
             "input": [
                 {"role": "system", "content": "You are concise."},
                 {"role": "user", "content": "Say hello."},
@@ -120,13 +122,8 @@ def test_generate_text_uses_responses_create(monkeypatch):
 def test_generate_structured_uses_responses_parse(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = AzureOpenAIConfig(
-        endpoint="https://example.openai.azure.com/openai/v1/",
-        api_key="test-key",
-        model="test-deployment",
-        embedding_model="embedding-deployment",
-    )
-    client = AzureOpenAIClient(config)
+    config = _config()
+    client = AzureOpenAIClient(config, text_deployment="text-deployment")
 
     parsed = client.generate_structured(
         [LLMMessage(role="user", content="Extract the person.")],
@@ -136,7 +133,7 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
     assert parsed == {"name": "Ada"}
     assert FakeOpenAI.instances[0].responses.parse_calls == [
         {
-            "model": "test-deployment",
+            "model": "text-deployment",
             "input": [
                 {"role": "user", "content": "Extract the person."},
             ],
@@ -148,13 +145,8 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
 def test_embed_text_uses_embeddings_create(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = AzureOpenAIConfig(
-        endpoint="https://example.openai.azure.com/openai/v1/",
-        api_key="test-key",
-        model="test-deployment",
-        embedding_model="embedding-deployment",
-    )
-    client = AzureOpenAIClient(config)
+    config = _config()
+    client = AzureOpenAIClient(config, text_deployment="text-deployment")
 
     embedding = client.embed_text("OpenAI organization")
 
@@ -171,14 +163,8 @@ def test_embed_text_uses_embeddings_create(monkeypatch):
 def test_embed_texts_batches_inputs_and_preserves_order(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = AzureOpenAIConfig(
-        endpoint="https://example.openai.azure.com/openai/v1/",
-        api_key="test-key",
-        model="test-deployment",
-        embedding_model="embedding-deployment",
-        embedding_batch_size=2,
-    )
-    client = AzureOpenAIClient(config)
+    config = _config(embedding_batch_size=2)
+    client = AzureOpenAIClient(config, text_deployment="text-deployment")
 
     embeddings = client.embed_texts(["alpha", "beta", "gamma"])
 

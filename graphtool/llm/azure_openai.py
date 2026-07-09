@@ -10,17 +10,18 @@ T = TypeVar("T")
 
 
 class AzureOpenAIClient:
-    def __init__(self, config: AzureOpenAIConfig) -> None:
+    def __init__(self, config: AzureOpenAIConfig, *, text_deployment: str) -> None:
         self._config = config
+        self._text_deployment = text_deployment
         self._client = OpenAI(base_url=config.endpoint, api_key=config.api_key)
 
     @property
     def embedding_model(self) -> str:
-        return self._config.embedding_model
+        return self._config.embedding_deployment
 
     def generate_text(self, messages: Sequence[LLMMessage]) -> LLMTextResponse:
         response = self._client.responses.create(
-            model=self._config.model,
+            model=self._text_deployment,
             input=_to_response_input(messages),
         )
 
@@ -36,7 +37,7 @@ class AzureOpenAIClient:
         response_model: type[T],
     ) -> T:
         response = self._client.responses.parse(
-            model=self._config.model,
+            model=self._text_deployment,
             input=_to_response_input(messages),
             text_format=response_model,
         )
@@ -50,7 +51,7 @@ class AzureOpenAIClient:
         vectors = []
         for batch in _batches(texts, self._config.embedding_batch_size):
             response = self._client.embeddings.create(
-                model=self._config.embedding_model,
+                model=self._config.embedding_deployment,
                 input=batch,
             )
             vectors.extend(list(item.embedding) for item in response.data)

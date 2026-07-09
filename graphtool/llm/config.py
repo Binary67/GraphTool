@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 
 DEFAULT_EMBEDDING_BATCH_SIZE = 4
 DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY = 0.80
+FLAGSHIP_DEPLOYMENT_ENV = "AZURE_OPENAI_FLAGSHIP_DEPLOYMENT"
+FAST_DEPLOYMENT_ENV = "AZURE_OPENAI_FAST_DEPLOYMENT"
+EMBEDDING_DEPLOYMENT_ENV = "AZURE_OPENAI_EMBEDDING_DEPLOYMENT"
 EMBEDDING_BATCH_SIZE_ENV = "AZURE_OPENAI_EMBEDDING_BATCH_SIZE"
 ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV = (
     "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY"
@@ -21,8 +24,9 @@ class ConfigError(ValueError):
 class AzureOpenAIConfig:
     endpoint: str
     api_key: str
-    model: str
-    embedding_model: str
+    flagship_deployment: str
+    fast_deployment: str
+    embedding_deployment: str
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
     entity_resolution_min_candidate_similarity: float = (
         DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY
@@ -35,8 +39,9 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
     names = [
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_KEY",
-        "AZURE_OPENAI_MODEL",
-        "AZURE_OPENAI_EMBEDDING_MODEL",
+        FLAGSHIP_DEPLOYMENT_ENV,
+        FAST_DEPLOYMENT_ENV,
+        EMBEDDING_DEPLOYMENT_ENV,
     ]
     values = {name: os.getenv(name) for name in names}
     missing = [name for name, value in values.items() if not value]
@@ -48,8 +53,9 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
     return AzureOpenAIConfig(
         endpoint=cast(str, values["AZURE_OPENAI_ENDPOINT"]),
         api_key=cast(str, values["AZURE_OPENAI_API_KEY"]),
-        model=cast(str, values["AZURE_OPENAI_MODEL"]),
-        embedding_model=cast(str, values["AZURE_OPENAI_EMBEDDING_MODEL"]),
+        flagship_deployment=cast(str, values[FLAGSHIP_DEPLOYMENT_ENV]),
+        fast_deployment=cast(str, values[FAST_DEPLOYMENT_ENV]),
+        embedding_deployment=cast(str, values[EMBEDDING_DEPLOYMENT_ENV]),
         embedding_batch_size=_embedding_batch_size(os.getenv(EMBEDDING_BATCH_SIZE_ENV)),
         entity_resolution_min_candidate_similarity=(
             _entity_resolution_min_candidate_similarity(

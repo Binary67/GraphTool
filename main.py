@@ -52,7 +52,10 @@ def main() -> None:
         if unprocessed_sources:
             logger.info("Ingesting %s documents", len(unprocessed_sources))
             config = load_azure_openai_config()
-            llm = AzureOpenAIClient(config)
+            llm = AzureOpenAIClient(
+                config,
+                text_deployment=config.fast_deployment,
+            )
             ingest_unprocessed_documents(
                 {
                     source: documents[source]

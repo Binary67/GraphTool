@@ -5,14 +5,19 @@ import pytest
 from graphtool.llm.config import ConfigError, load_azure_openai_config
 
 
+def _set_required_env(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_FLAGSHIP_DEPLOYMENT", "flagship-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_FAST_DEPLOYMENT", "fast-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "embedding-deployment")
+
+
 def test_loads_azure_openai_config(monkeypatch):
     load_dotenv = Mock()
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     endpoint = "https://example.openai.azure.com/openai/v1/"
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", raising=False)
     monkeypatch.delenv(
         "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY",
@@ -24,8 +29,9 @@ def test_loads_azure_openai_config(monkeypatch):
     load_dotenv.assert_called_once_with(override=True)
     assert config.endpoint == endpoint
     assert config.api_key == "test-key"
-    assert config.model == "test-deployment"
-    assert config.embedding_model == "embedding-deployment"
+    assert config.flagship_deployment == "flagship-deployment"
+    assert config.fast_deployment == "fast-deployment"
+    assert config.embedding_deployment == "embedding-deployment"
     assert config.embedding_batch_size == 4
     assert config.entity_resolution_min_candidate_similarity == 0.80
 
@@ -35,8 +41,9 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("AZURE_OPENAI_MODEL", raising=False)
-    monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_FLAGSHIP_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_FAST_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", raising=False)
     monkeypatch.delenv(
         "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY",
@@ -50,8 +57,9 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     message = str(exc_info.value)
     assert "AZURE_OPENAI_ENDPOINT" in message
     assert "AZURE_OPENAI_API_KEY" in message
-    assert "AZURE_OPENAI_MODEL" in message
-    assert "AZURE_OPENAI_EMBEDDING_MODEL" in message
+    assert "AZURE_OPENAI_FLAGSHIP_DEPLOYMENT" in message
+    assert "AZURE_OPENAI_FAST_DEPLOYMENT" in message
+    assert "AZURE_OPENAI_EMBEDDING_DEPLOYMENT" in message
 
 
 def test_loads_custom_embedding_batch_size(monkeypatch):
@@ -59,8 +67,7 @@ def test_loads_custom_embedding_batch_size(monkeypatch):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", "8")
 
     config = load_azure_openai_config()
@@ -73,8 +80,7 @@ def test_blank_embedding_batch_size_uses_default(monkeypatch):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", " ")
 
     config = load_azure_openai_config()
@@ -87,8 +93,7 @@ def test_loads_custom_entity_resolution_min_candidate_similarity(monkeypatch):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY", "0.85")
 
     config = load_azure_openai_config()
@@ -101,8 +106,7 @@ def test_blank_entity_resolution_min_candidate_similarity_uses_default(monkeypat
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY", " ")
 
     config = load_azure_openai_config()
@@ -119,8 +123,7 @@ def test_invalid_entity_resolution_min_candidate_similarity_raises_clear_error(
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY", value)
 
     with pytest.raises(ConfigError) as exc_info:
@@ -135,8 +138,7 @@ def test_invalid_embedding_batch_size_raises_clear_error(monkeypatch, value):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1/")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "test-deployment")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_MODEL", "embedding-deployment")
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", value)
 
     with pytest.raises(ConfigError) as exc_info:
