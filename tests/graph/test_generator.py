@@ -182,6 +182,103 @@ def test_generate_knowledge_graph_filters_structural_nodes_and_edges():
     assert graph.edges[0].label == "used_for"
 
 
+def test_generate_knowledge_graph_merges_duplicate_nodes_within_chunk():
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(id="openai", label="OpenAI", type="Organization"),
+                    _ExtractedNode(
+                        id="openai",
+                        label="OpenAI organization",
+                        type="Organization",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].id == "openai"
+    assert graph.nodes[0].label == "OpenAI"
+    assert graph.nodes[0].type == "Organization"
+    assert graph.nodes[0].aliases == ["OpenAI organization"]
+    assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
+
+
+def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk():
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(id="python", label="Python", type="Language"),
+                    _ExtractedNode(id="pydantic", label="Pydantic", type="Library"),
+                    _ExtractedNode(id="fastapi", label="FastAPI", type="Framework"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="duplicate-edge",
+                        source="pydantic",
+                        target="python",
+                        label="built_for",
+                    ),
+                    _ExtractedEdge(
+                        id="duplicate-edge",
+                        source="fastapi",
+                        target="pydantic",
+                        label="uses",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+
+    assert [(edge.id, edge.source, edge.target, edge.label) for edge in graph.edges] == [
+        ("edge-0001", "pydantic", "python", "built_for"),
+        ("edge-0002", "fastapi", "pydantic", "uses"),
+    ]
+
+
+def test_generate_knowledge_graph_deduplicates_semantic_edges_within_chunk():
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(id="python", label="Python", type="Language"),
+                    _ExtractedNode(id="pydantic", label="Pydantic", type="Library"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="first-edge",
+                        source="pydantic",
+                        target="python",
+                        label="built_for",
+                    ),
+                    _ExtractedEdge(
+                        id="second-edge",
+                        source="pydantic",
+                        target="python",
+                        label="built_for",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+
+    assert len(graph.edges) == 1
+    assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].source == "pydantic"
+    assert graph.edges[0].target == "python"
+    assert graph.edges[0].label == "built_for"
+    assert graph.edges[0].chunk_ids == ["doc-chunk-0000"]
+
+
 def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp_path):
     dropped_edges_path = tmp_path / "dropped_edges.jsonl"
     fake = FakeLLM(

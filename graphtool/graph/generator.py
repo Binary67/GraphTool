@@ -164,18 +164,9 @@ def _generate_chunk_graph(
     ]
     graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
     structural_node_ids = _structural_node_ids(graph.nodes, chunk)
-    nodes = [
-        Node(
-            id=node.id,
-            label=node.label,
-            type=node.type,
-            chunk_ids=[chunk.id],
-        )
-        for node in graph.nodes
-        if node.id not in structural_node_ids
-    ]
+    nodes = _dedupe_chunk_nodes(graph.nodes, structural_node_ids, chunk)
     node_ids = {node.id for node in nodes}
-    edges = []
+    edges_by_key: dict[tuple[str, str, str], Edge] = {}
     for edge in graph.edges:
         if edge.source in structural_node_ids or edge.target in structural_node_ids:
             continue
@@ -189,16 +180,22 @@ def _generate_chunk_graph(
             _record_dropped_edge(chunk, edge, missing, dropped_edges_path)
             continue
 
-        edges.append(
+        key = (edge.source, edge.target, edge.label)
+        edges_by_key.setdefault(
+            key,
             Edge(
                 id=edge.id,
                 source=edge.source,
                 target=edge.target,
                 label=edge.label,
                 chunk_ids=[chunk.id],
-            )
+            ),
         )
 
+    edges = [
+        edge.model_copy(update={"id": f"edge-{index:04d}"})
+        for index, edge in enumerate(edges_by_key.values(), start=1)
+    ]
     generated = _GeneratedChunkGraph(
         graph=KnowledgeGraph(nodes=nodes, edges=edges),
         raw_nodes=len(graph.nodes),
@@ -209,6 +206,35 @@ def _generate_chunk_graph(
     )
     _log_chunk_graph(chunk, generated)
     return generated
+
+
+def _dedupe_chunk_nodes(
+    extracted_nodes: Sequence[_ExtractedNode],
+    structural_node_ids: set[str],
+    chunk: Chunk,
+) -> list[Node]:
+    nodes_by_id: dict[str, Node] = {}
+
+    for node in extracted_nodes:
+        if node.id in structural_node_ids:
+            continue
+
+        incoming = Node(
+            id=node.id,
+            label=node.label,
+            type=node.type,
+            chunk_ids=[chunk.id],
+        )
+        existing = nodes_by_id.get(incoming.id)
+        if existing is None:
+            nodes_by_id[incoming.id] = incoming
+            continue
+
+        nodes_by_id[incoming.id] = existing.model_copy(
+            update={"aliases": _merge_aliases(existing, incoming)}
+        )
+
+    return list(nodes_by_id.values())
 
 
 def _heading_path_text(chunk: Chunk) -> str:
