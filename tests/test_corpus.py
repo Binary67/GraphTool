@@ -17,6 +17,7 @@ from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddi
 from graphtool.graph.resolver import EntityResolutionDecision
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
+from graphtool.retrieval import JsonChunkEmbeddingStore
 from graphtool.source import source_key
 
 T = TypeVar("T")
@@ -77,6 +78,25 @@ class FakeSemanticLLM:
         label_line = text.splitlines()[0] if text else ""
         for key, vector in self.vectors.items():
             if key in label_line:
+                return vector
+        return [0.0, 1.0]
+
+
+class FakeEmbeddingClient:
+    embedding_model = "fake-embedding-model"
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self.vectors = vectors
+        self.calls: list[str] = []
+
+    def embed_texts(self, texts) -> list[list[float]]:
+        batch = list(texts)
+        self.calls.extend(batch)
+        return [self._vector_for(text) for text in batch]
+
+    def _vector_for(self, text: str) -> list[float]:
+        for marker, vector in self.vectors.items():
+            if marker in text:
                 return vector
         return [0.0, 1.0]
 
@@ -541,6 +561,48 @@ def test_search_knowledge_base_uses_cached_graph_when_available(tmp_path):
     )
 
     assert [hit.node.id for hit in result.node_hits] == ["cached"]
+
+
+def test_search_knowledge_base_uses_chunk_embeddings_when_available(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    chunk_embedding_store = JsonChunkEmbeddingStore(
+        tmp_path / "chunk_embeddings.json"
+    )
+    source = "docs/deploy.md"
+    chunk = _chunk(
+        source,
+        "# Deploy\nSetup stalls after authentication.",
+        "Deploy",
+    )
+    chunk_store.save(source, [chunk])
+    graph_store.save(
+        KnowledgeGraph(
+            nodes=[],
+            edges=[],
+            metadata=GraphMetadata(
+                source=source,
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            ),
+        )
+    )
+    embedding = FakeEmbeddingClient(
+        {
+            "install hangs": [1.0, 0.0],
+            "Setup stalls": [1.0, 0.0],
+        }
+    )
+
+    result = search_knowledge_base(
+        "install hangs",
+        graph_store,
+        chunk_store,
+        embedding_client=embedding,
+        chunk_embedding_store=chunk_embedding_store,
+    )
+
+    assert [hit.chunk.id for hit in result.chunks] == [chunk.id]
+    assert chunk_embedding_store.exists() is True
 
 
 def test_search_knowledge_base_raises_when_saved_graph_has_no_chunks(tmp_path):

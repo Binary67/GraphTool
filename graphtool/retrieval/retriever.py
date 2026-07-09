@@ -1,10 +1,17 @@
 import json
+import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.bm25 import BM25Document, BM25Index
+from graphtool.retrieval.embedding_store import (
+    ChunkEmbeddingRecord,
+    ChunkEmbeddingStore,
+    chunk_embedding_input_hash,
+)
 from graphtool.retrieval.types import (
     ChunkHit,
     NodeHit,
@@ -13,6 +20,8 @@ from graphtool.retrieval.types import (
 )
 
 BOTH_ENDPOINTS_SELECTED_BONUS = 0.25
+BM25_CHUNK_WEIGHT = 1.0
+SEMANTIC_CHUNK_WEIGHT = 1.0
 NODE_CHUNK_SUPPORT_WEIGHT = 0.5
 EDGE_CHUNK_SUPPORT_WEIGHT = 0.5
 OVERLAP_CHUNK_BONUS = 0.25
@@ -26,6 +35,8 @@ def retrieve_context(
     top_nodes: int = 5,
     top_edges: int = 5,
     top_chunks: int = 5,
+    embedding_client: EmbeddingClient | None = None,
+    chunk_embedding_store: ChunkEmbeddingStore | None = None,
 ) -> RetrievalResult:
     chunks_by_id = {chunk.id: chunk for chunk in chunks}
     nodes_by_id = {node.id: node for node in graph.nodes}
@@ -38,7 +49,16 @@ def retrieve_context(
         node_hits,
         top_edges,
     )
-    chunk_hits = _retrieve_chunks(query, chunks_by_id, node_hits, relationship_hits)
+    chunk_hits = _retrieve_chunks(
+        query,
+        graph,
+        chunks_by_id,
+        nodes_by_id,
+        node_hits,
+        relationship_hits,
+        embedding_client=embedding_client,
+        chunk_embedding_store=chunk_embedding_store,
+    )
     chunk_hits = chunk_hits[:top_chunks]
     sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
 
@@ -128,9 +148,14 @@ def _retrieve_relationships(
 
 def _retrieve_chunks(
     query: str,
+    graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
+    nodes_by_id: dict[str, Node],
     node_hits: Sequence[NodeHit],
     relationship_hits: Sequence[RelationshipHit],
+    *,
+    embedding_client: EmbeddingClient | None = None,
+    chunk_embedding_store: ChunkEmbeddingStore | None = None,
 ) -> list[ChunkHit]:
     linked_node_scores_by_chunk: dict[str, list[tuple[str, float]]] = {}
     linked_edge_scores_by_chunk: dict[str, list[tuple[str, float]]] = {}
@@ -149,25 +174,41 @@ def _retrieve_chunks(
                     (hit.edge.id, hit.score)
                 )
 
-    candidate_chunk_ids = set(linked_node_scores_by_chunk) | set(
-        linked_edge_scores_by_chunk
+    searchable_text_by_chunk = _searchable_text_by_chunk(
+        graph,
+        chunks_by_id,
+        nodes_by_id,
     )
-    candidate_chunks = [chunks_by_id[chunk_id] for chunk_id in candidate_chunk_ids]
     documents = [
-        BM25Document(id=chunk.id, text=_chunk_text(chunk))
-        for chunk in candidate_chunks
+        BM25Document(id=chunk.id, text=searchable_text_by_chunk[chunk.id])
+        for chunk in chunks_by_id.values()
     ]
     index = BM25Index(documents)
+    bm25_scores = _normalize_scores(
+        {
+            document.id: score
+            for document, score in index.rank(query)
+        }
+    )
+    semantic_scores = _normalize_scores(
+        _semantic_chunk_scores(
+            query,
+            searchable_text_by_chunk,
+            embedding_client,
+            chunk_embedding_store,
+        )
+    )
 
     chunk_hits: list[ChunkHit] = []
-    for document, direct_score in index.rank(query):
-        node_scores = linked_node_scores_by_chunk.get(document.id, [])
-        edge_scores = linked_edge_scores_by_chunk.get(document.id, [])
+    for chunk in chunks_by_id.values():
+        node_scores = linked_node_scores_by_chunk.get(chunk.id, [])
+        edge_scores = linked_edge_scores_by_chunk.get(chunk.id, [])
         best_node_score = max((score for _, score in node_scores), default=0.0)
         best_edge_score = max((score for _, score in edge_scores), default=0.0)
         overlap_bonus = OVERLAP_CHUNK_BONUS if node_scores and edge_scores else 0.0
         score = (
-            direct_score
+            bm25_scores.get(chunk.id, 0.0) * BM25_CHUNK_WEIGHT
+            + semantic_scores.get(chunk.id, 0.0) * SEMANTIC_CHUNK_WEIGHT
             + best_node_score * NODE_CHUNK_SUPPORT_WEIGHT
             + best_edge_score * EDGE_CHUNK_SUPPORT_WEIGHT
             + overlap_bonus
@@ -176,7 +217,7 @@ def _retrieve_chunks(
             continue
         chunk_hits.append(
             ChunkHit(
-                chunk=chunks_by_id[document.id],
+                chunk=chunk,
                 score=score,
                 linked_node_ids=_unique_ordered(node_id for node_id, _ in node_scores),
                 linked_edge_ids=_unique_ordered(edge_id for edge_id, _ in edge_scores),
@@ -185,6 +226,101 @@ def _retrieve_chunks(
 
     chunk_hits.sort(key=lambda hit: (-hit.score, hit.chunk.index, hit.chunk.id))
     return chunk_hits
+
+
+def _searchable_text_by_chunk(
+    graph: KnowledgeGraph,
+    chunks_by_id: dict[str, Chunk],
+    nodes_by_id: dict[str, Node],
+) -> dict[str, str]:
+    nodes_by_chunk: dict[str, list[Node]] = {}
+    for node in graph.nodes:
+        for chunk_id in node.chunk_ids:
+            if chunk_id in chunks_by_id:
+                nodes_by_chunk.setdefault(chunk_id, []).append(node)
+
+    edges_by_chunk: dict[str, list[Edge]] = {}
+    for edge in graph.edges:
+        if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
+            continue
+        for chunk_id in edge.chunk_ids:
+            if chunk_id in chunks_by_id:
+                edges_by_chunk.setdefault(chunk_id, []).append(edge)
+
+    return {
+        chunk.id: _chunk_text(
+            chunk,
+            nodes_by_chunk.get(chunk.id, []),
+            edges_by_chunk.get(chunk.id, []),
+            nodes_by_id,
+        )
+        for chunk in chunks_by_id.values()
+    }
+
+
+def _semantic_chunk_scores(
+    query: str,
+    searchable_text_by_chunk: dict[str, str],
+    embedding_client: EmbeddingClient | None,
+    chunk_embedding_store: ChunkEmbeddingStore | None,
+) -> dict[str, float]:
+    if embedding_client is None or not searchable_text_by_chunk:
+        return {}
+
+    query_vector = embedding_client.embed_texts([query])[0]
+    records = chunk_embedding_store.load() if chunk_embedding_store is not None else {}
+    embedding_model = embedding_client.embedding_model
+    records_to_save = dict(records)
+    chunk_records: dict[str, ChunkEmbeddingRecord] = {}
+    missing: list[tuple[str, str, str]] = []
+
+    for chunk_id, text in searchable_text_by_chunk.items():
+        text_hash = chunk_embedding_input_hash(text)
+        record = records.get(chunk_id)
+        if (
+            record is not None
+            and record.embedding_model == embedding_model
+            and record.embedding_input_hash == text_hash
+        ):
+            chunk_records[chunk_id] = record
+            continue
+
+        missing.append((chunk_id, text_hash, text))
+
+    if missing:
+        vectors = embedding_client.embed_texts([text for _, _, text in missing])
+        for (chunk_id, text_hash, _), vector in zip(missing, vectors, strict=True):
+            record = ChunkEmbeddingRecord(
+                chunk_id=chunk_id,
+                embedding_model=embedding_model,
+                embedding_input_hash=text_hash,
+                vector=vector,
+            )
+            records_to_save[chunk_id] = record
+            chunk_records[chunk_id] = record
+        if chunk_embedding_store is not None:
+            chunk_embedding_store.save(records_to_save)
+
+    return {
+        chunk_id: _cosine_similarity(query_vector, record.vector)
+        for chunk_id, record in chunk_records.items()
+    }
+
+
+def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:
+    positive_scores = {
+        key: score
+        for key, score in scores.items()
+        if score > 0
+    }
+    if not positive_scores:
+        return {}
+
+    max_score = max(positive_scores.values())
+    return {
+        key: score / max_score
+        for key, score in positive_scores.items()
+    }
 
 
 def _node_text(node: Node, chunks_by_id: dict[str, Chunk]) -> str:
@@ -220,14 +356,57 @@ def _edge_text(edge: Edge, nodes_by_id: dict[str, Node]) -> str:
     )
 
 
-def _chunk_text(chunk: Chunk) -> str:
-    return " ".join([*chunk.heading_path, chunk.text])
+def _chunk_text(
+    chunk: Chunk,
+    nodes: Sequence[Node],
+    edges: Sequence[Edge],
+    nodes_by_id: dict[str, Node],
+) -> str:
+    lines = []
+    if chunk.heading_path:
+        lines.extend(["Heading:", " > ".join(chunk.heading_path)])
+
+    lines.extend(["Content:", chunk.text])
+
+    if nodes:
+        lines.append("Entities:")
+        lines.extend(
+            f"{node.label} [{node.type}]"
+            for node in nodes
+        )
+
+    if edges:
+        lines.append("Relationships:")
+        lines.extend(
+            _relationship_text(edge, nodes_by_id)
+            for edge in edges
+        )
+
+    return "\n".join(lines)
+
+
+def _relationship_text(edge: Edge, nodes_by_id: dict[str, Node]) -> str:
+    source = nodes_by_id[edge.source]
+    target = nodes_by_id[edge.target]
+    return f"{source.label} --{edge.label}--> {target.label}"
 
 
 def _properties_text(properties: dict[str, Any]) -> str:
     if not properties:
         return ""
     return json.dumps(properties, sort_keys=True)
+
+
+def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right):
+        return 0.0
+
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
 
 
 def _format_context(

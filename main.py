@@ -15,6 +15,7 @@ from graphtool.graph import (
     JsonTaxonomySuggestionStore,
 )
 from graphtool.llm import AzureOpenAIClient, load_azure_openai_config
+from graphtool.retrieval import JsonChunkEmbeddingStore
 from graphtool.run_logging import configure_run_logger
 from graphtool.visualization import export_knowledge_base_visualizations
 
@@ -23,6 +24,7 @@ DOCUMENTS_DIR = ROOT / "documents"
 CHUNKS_DIR = ROOT / "data" / "chunks"
 GRAPHS_DIR = ROOT / "data" / "graphs"
 GRAPH_EMBEDDINGS_DIR = ROOT / "data" / "graph_embeddings"
+CHUNK_EMBEDDINGS_PATH = ROOT / "data" / "chunk_embeddings.json"
 KNOWLEDGE_BASE_PATH = ROOT / "data" / "knowledge_base.json"
 KNOWLEDGE_BASE_EMBEDDINGS_PATH = ROOT / "data" / "knowledge_base_embeddings.json"
 TAXONOMY_SUGGESTIONS_PATH = ROOT / "data" / "taxonomy_suggestions.json"
@@ -48,19 +50,21 @@ def main() -> None:
             TAXONOMY_SUGGESTIONS_PATH
         )
         chunk_store = JsonChunkStore(CHUNKS_DIR)
+        chunk_embedding_store = JsonChunkEmbeddingStore(CHUNK_EMBEDDINGS_PATH)
         documents = load_markdown_documents(DOCUMENTS_DIR, source_root=ROOT)
         logger.info("Loaded %s markdown documents", len(documents))
 
         unprocessed_sources = filter_unprocessed_sources(documents, graph_store)
         logger.info("Found %s unprocessed documents", len(unprocessed_sources))
 
+        config = load_azure_openai_config()
+        llm = AzureOpenAIClient(
+            config,
+            text_deployment=config.fast_deployment,
+        )
+
         if unprocessed_sources:
             logger.info("Ingesting %s documents", len(unprocessed_sources))
-            config = load_azure_openai_config()
-            llm = AzureOpenAIClient(
-                config,
-                text_deployment=config.fast_deployment,
-            )
             ingest_unprocessed_documents(
                 {
                     source: documents[source]
@@ -96,6 +100,8 @@ def main() -> None:
             graph_store,
             chunk_store,
             knowledge_base_store=knowledge_base_store,
+            embedding_client=llm,
+            chunk_embedding_store=chunk_embedding_store,
         )
         logger.info("Search completed with %s sources", len(result.sources))
 

@@ -12,7 +12,8 @@ from graphtool.graph.resolver import (
 )
 from graphtool.graph.taxonomy import TaxonomySuggestionStore
 from graphtool.graph.types import KnowledgeGraph
-from graphtool.llm.base import LLMClient
+from graphtool.llm.base import EmbeddingClient, LLMClient
+from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.retrieval.retriever import retrieve_context
 from graphtool.retrieval.types import RetrievalResult
 
@@ -40,6 +41,8 @@ def search_knowledge_base(
     chunk_store: JsonChunkStore,
     *,
     knowledge_base_store: JsonKnowledgeBaseStore | None = None,
+    embedding_client: EmbeddingClient | None = None,
+    chunk_embedding_store: ChunkEmbeddingStore | None = None,
     top_nodes: int = 5,
     top_edges: int = 5,
     top_chunks: int = 5,
@@ -59,6 +62,8 @@ def search_knowledge_base(
         top_nodes=top_nodes,
         top_edges=top_edges,
         top_chunks=top_chunks,
+        embedding_client=embedding_client,
+        chunk_embedding_store=chunk_embedding_store,
     )
 
 
