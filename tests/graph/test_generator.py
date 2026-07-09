@@ -74,6 +74,29 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
     assert "# Python" in messages[1].content
 
 
+def test_generate_knowledge_graph_prompt_keeps_metadata_out_of_graph_content():
+    fake = FakeLLM([_extracted_graph()])
+
+    generate_knowledge_graph([_chunk()], "doc.md", fake)
+
+    messages, _ = fake.calls[0]
+    system_prompt = messages[0].content
+    user_prompt = messages[1].content
+
+    assert "important named entities or concise noun phrases" in system_prompt
+    assert "Do not create nodes for full actions" in system_prompt
+    assert "headings, chunk ids, source paths, URLs" in system_prompt
+    assert (
+        "Use prompt metadata such as Chunk ID, Source, and Heading path only as context"
+        in system_prompt
+    )
+    assert "never represent that metadata as nodes or edges" in system_prompt
+    assert "Express actions, predicates" in system_prompt
+    assert "Chunk ID: doc-chunk-0000" in user_prompt
+    assert "Source: doc.md" in user_prompt
+    assert "Heading path: Python" in user_prompt
+
+
 def test_generate_knowledge_graph_attaches_metadata():
     fake = FakeLLM([_extracted_graph()])
 

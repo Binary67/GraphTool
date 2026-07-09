@@ -28,9 +28,16 @@ class GraphResolver(Protocol):
         ...
 
 SYSTEM_PROMPT = (
-    "You extract knowledge graphs from text. Identify the key entities as nodes "
-    "and the relationships between them as edges. Every edge must reference "
-    "existing node ids. Return only the structured nodes and edges."
+    "You extract focused knowledge graphs from markdown text. Create nodes only "
+    "for important named entities or concise noun phrases that represent domain "
+    "concepts, products, tools, people, organizations, APIs, files, features, "
+    "systems, or other meaningful entities. Do not create nodes for full actions, "
+    "sentences, claims, headings, chunk ids, source paths, URLs, examples-as-examples, "
+    "table scaffolding, or incidental wording. Use prompt metadata such as Chunk ID, "
+    "Source, and Heading path only as context; never represent that metadata as nodes "
+    "or edges. Express actions, predicates, capabilities, ownership, usage, containment, "
+    "dependency, and other relationships as edges. Every edge must reference existing "
+    "node ids. Return only the structured nodes and edges."
 )
 
 USER_PROMPT_TEMPLATE = (
