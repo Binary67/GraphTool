@@ -265,3 +265,246 @@ def test_resolver_reuses_matching_cached_embeddings(tmp_path):
 
     assert len(embedding.calls) == first_call_count
     assert store.load()["openai"].vector == [1.0, 0.0]
+
+
+def test_combine_into_resolves_only_new_nodes_against_existing(tmp_path):
+    store = JsonEmbeddingStore(tmp_path / "embeddings.json")
+    existing = KnowledgeGraph(
+        nodes=[
+            Node(id="openai", label="OpenAI", type="Organization", chunk_ids=["c1"]),
+            Node(id="chatgpt", label="ChatGPT", type="Product", chunk_ids=["c1"]),
+        ],
+        edges=[
+            Edge(id="edge-0001", source="openai", target="chatgpt", label="develops", chunk_ids=["c1"]),
+        ],
+    )
+    seeding = SemanticEntityResolver(
+        FakeLLM(),
+        FakeEmbeddingClient(
+            {
+                "OpenAI": [1.0, 0.0, 0.0, 0.0],
+                "ChatGPT": [0.0, 1.0, 0.0, 0.0],
+            }
+        ),
+        store,
+    )
+    seeding.combine([existing])
+
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient(
+        {
+            "OpenAI": [1.0, 0.0, 0.0, 0.0],
+            "ChatGPT": [0.0, 1.0, 0.0, 0.0],
+            "Anthropic": [0.0, 0.0, 1.0, 0.0],
+            "Claude": [0.0, 0.0, 0.0, 1.0],
+        }
+    )
+    resolver = SemanticEntityResolver(llm, embedding, store)
+
+    new_graphs = [
+        KnowledgeGraph(
+            nodes=[
+                Node(id="anthropic", label="Anthropic", type="Organization", chunk_ids=["c2"]),
+                Node(id="claude", label="Claude", type="Product", chunk_ids=["c2"]),
+            ],
+            edges=[
+                Edge(id="edge-x", source="anthropic", target="claude", label="develops", chunk_ids=["c2"]),
+            ],
+        ),
+    ]
+
+    graph = resolver.combine_into(existing, new_graphs)
+
+    assert {node.id for node in graph.nodes} == {"openai", "chatgpt", "anthropic", "claude"}
+    assert llm.calls == []
+
+    full_combine_embedding = FakeEmbeddingClient(
+        {
+            "OpenAI": [1.0, 0.0, 0.0, 0.0],
+            "ChatGPT": [0.0, 1.0, 0.0, 0.0],
+            "Anthropic": [0.0, 0.0, 1.0, 0.0],
+            "Claude": [0.0, 0.0, 0.0, 1.0],
+        }
+    )
+    full_combine = SemanticEntityResolver(FakeLLM(), full_combine_embedding)
+    full_combine.combine([existing, *new_graphs])
+
+    assert len(embedding.calls) < len(full_combine_embedding.calls)
+
+
+def test_combine_into_preserves_existing_edges_and_appends_new_edges():
+    existing = KnowledgeGraph(
+        nodes=[
+            Node(id="alpha", label="Alpha", type="Concept"),
+            Node(id="beta", label="Beta", type="Concept"),
+        ],
+        edges=[
+            Edge(id="edge-0001", source="alpha", target="beta", label="relates_to", chunk_ids=["c1"]),
+        ],
+    )
+    resolver = SemanticEntityResolver(
+        FakeLLM(),
+        FakeEmbeddingClient(
+            {
+                "Alpha": [1.0, 0.0, 0.0, 0.0],
+                "Beta": [0.0, 1.0, 0.0, 0.0],
+                "Gamma": [0.0, 0.0, 1.0, 0.0],
+                "Delta": [0.0, 0.0, 0.0, 1.0],
+            }
+        ),
+    )
+
+    new_graphs = [
+        KnowledgeGraph(
+            nodes=[
+                Node(id="gamma", label="Gamma", type="Concept"),
+                Node(id="delta", label="Delta", type="Concept"),
+            ],
+            edges=[
+                Edge(id="edge-y", source="delta", target="gamma", label="links_to", chunk_ids=["c2"]),
+            ],
+        ),
+    ]
+
+    graph = resolver.combine_into(existing, new_graphs)
+
+    edge_ids = {edge.id for edge in graph.edges}
+    assert "edge-0001" in edge_ids
+    new_edge = next(e for e in graph.edges if e.label == "links_to")
+    assert new_edge.id == "edge-0002"
+
+
+def test_combine_into_merges_duplicate_edge_between_existing_and_new():
+    existing = KnowledgeGraph(
+        nodes=[
+            Node(id="alpha", label="Alpha", type="Concept"),
+            Node(id="beta", label="Beta", type="Concept"),
+        ],
+        edges=[
+            Edge(id="edge-0001", source="alpha", target="beta", label="relates_to", chunk_ids=["c1"]),
+        ],
+    )
+    resolver = SemanticEntityResolver(
+        FakeLLM(),
+        FakeEmbeddingClient(
+            {
+                "Alpha": [1.0, 0.0],
+                "Beta": [0.0, 1.0],
+            }
+        ),
+    )
+
+    new_graphs = [
+        KnowledgeGraph(
+            nodes=[
+                Node(id="alpha", label="Alpha", type="Concept", chunk_ids=["c2"]),
+                Node(id="beta", label="Beta", type="Concept", chunk_ids=["c2"]),
+            ],
+            edges=[
+                Edge(id="edge-z", source="alpha", target="beta", label="relates_to", chunk_ids=["c2"]),
+            ],
+        ),
+    ]
+
+    graph = resolver.combine_into(existing, new_graphs)
+
+    relates_edges = [e for e in graph.edges if e.label == "relates_to"]
+    assert len(relates_edges) == 1
+    assert relates_edges[0].chunk_ids == ["c1", "c2"]
+
+
+def test_combine_into_allocates_edge_ids_after_existing_duplicate_merge():
+    existing = KnowledgeGraph(
+        nodes=[
+            Node(id="alpha", label="Alpha", type="Concept"),
+            Node(id="beta", label="Beta", type="Concept"),
+            Node(id="gamma", label="Gamma", type="Concept"),
+            Node(id="delta", label="Delta", type="Concept"),
+        ],
+        edges=[
+            Edge(
+                id="edge-0001",
+                source="alpha",
+                target="beta",
+                label="relates_to",
+                chunk_ids=["c1"],
+            ),
+            Edge(
+                id="edge-0002",
+                source="gamma",
+                target="delta",
+                label="relates_to",
+                chunk_ids=["c1"],
+            ),
+        ],
+    )
+    resolver = SemanticEntityResolver(
+        FakeLLM(),
+        FakeEmbeddingClient(),
+        min_candidate_similarity=1.1,
+    )
+
+    graph = resolver.combine_into(
+        existing,
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="alpha", label="Alpha", type="Concept", chunk_ids=["c2"]),
+                    Node(id="beta", label="Beta", type="Concept", chunk_ids=["c2"]),
+                    Node(id="epsilon", label="Epsilon", type="Concept"),
+                    Node(id="zeta", label="Zeta", type="Concept"),
+                ],
+                edges=[
+                    Edge(
+                        id="duplicate",
+                        source="alpha",
+                        target="beta",
+                        label="relates_to",
+                        chunk_ids=["c2"],
+                    ),
+                    Edge(
+                        id="new",
+                        source="epsilon",
+                        target="zeta",
+                        label="relates_to",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    assert [edge.id for edge in graph.edges] == [
+        "edge-0001",
+        "edge-0002",
+        "edge-0003",
+    ]
+    duplicate = next(
+        edge
+        for edge in graph.edges
+        if edge.source == "alpha" and edge.target == "beta"
+    )
+    assert duplicate.chunk_ids == ["c1", "c2"]
+
+    graph = resolver.combine_into(
+        graph,
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="epsilon", label="Epsilon", type="Concept"),
+                    Node(id="delta", label="Delta", type="Concept"),
+                ],
+                edges=[
+                    Edge(
+                        id="another-new",
+                        source="epsilon",
+                        target="delta",
+                        label="relates_to",
+                    )
+                ],
+            )
+        ],
+    )
+
+    edge_ids = [edge.id for edge in graph.edges]
+    assert edge_ids == ["edge-0001", "edge-0002", "edge-0003", "edge-0004"]
+    assert len(edge_ids) == len(set(edge_ids))

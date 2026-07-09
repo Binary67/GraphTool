@@ -64,10 +64,31 @@ class SemanticEntityResolver:
         self._relationship_contexts: dict[str, list[str]] = {}
 
     def combine(self, graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
-        self._relationship_contexts = _build_relationship_contexts(graphs)
+        return self.combine_into(None, graphs)
+
+    def combine_into(
+        self,
+        existing: KnowledgeGraph | None,
+        graphs: Sequence[KnowledgeGraph],
+    ) -> KnowledgeGraph:
+        all_graphs = [existing, *graphs] if existing is not None else list(graphs)
+        self._relationship_contexts = _build_relationship_contexts(all_graphs)
+
         canonical_nodes: list[Node] = []
         canonical_by_id: dict[str, Node] = {}
         node_id_map: dict[str, str] = {}
+
+        if existing is not None:
+            for node in existing.nodes:
+                canonical = _canonicalize_new_node(node)
+                canonical_nodes.append(canonical)
+                canonical_by_id[canonical.id] = canonical
+                node_id_map[node.id] = canonical.id
+            existing_edges = [
+                _remap_edge(edge, node_id_map) for edge in existing.edges
+            ]
+        else:
+            existing_edges = []
 
         for graph in graphs:
             for node in graph.nodes:
@@ -79,6 +100,7 @@ class SemanticEntityResolver:
                 node_id_map[node.id] = canonical_id
 
         edges = _dedupe_remapped_edges(graphs, node_id_map)
+        edges = _merge_edges(existing_edges, edges)
         graph = KnowledgeGraph(nodes=canonical_nodes, edges=edges)
 
         if self._embedding_store is not None:
@@ -352,10 +374,44 @@ def _dedupe_remapped_edges(
                 }
             )
 
-    return [
-        edge.model_copy(update={"id": f"edge-{index:04d}"})
-        for index, edge in enumerate(edges_by_key.values(), start=1)
-    ]
+    return list(edges_by_key.values())
+
+
+def _remap_edge(edge: Edge, node_id_map: Mapping[str, str]) -> Edge:
+    source = node_id_map.get(edge.source, edge.source)
+    target = node_id_map.get(edge.target, edge.target)
+    return edge.model_copy(update={"source": source, "target": target})
+
+
+def _merge_edges(existing: Sequence[Edge], incoming: Sequence[Edge]) -> list[Edge]:
+    by_key: dict[tuple[str, str, str], Edge] = {}
+    used_ids = {edge.id for edge in existing}
+    next_index = 1
+    for edge in existing:
+        by_key[(edge.source, edge.target, edge.label)] = edge
+    for edge in incoming:
+        key = (edge.source, edge.target, edge.label)
+        match = by_key.get(key)
+        if match is None:
+            edge_id, next_index = _next_edge_id(used_ids, next_index)
+            by_key[key] = edge.model_copy(update={"id": edge_id})
+            continue
+        by_key[key] = match.model_copy(
+            update={
+                "chunk_ids": _extend_unique(match.chunk_ids, edge.chunk_ids)
+            }
+        )
+    return list(by_key.values())
+
+
+def _next_edge_id(used_ids: set[str], start_index: int) -> tuple[str, int]:
+    index = start_index
+    while True:
+        edge_id = f"edge-{index:04d}"
+        index += 1
+        if edge_id not in used_ids:
+            used_ids.add(edge_id)
+            return edge_id, index
 
 
 def _build_relationship_contexts(

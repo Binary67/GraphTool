@@ -20,6 +20,13 @@ class GraphResolver(Protocol):
     def combine(self, graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
         ...
 
+    def combine_into(
+        self,
+        existing: KnowledgeGraph | None,
+        graphs: Sequence[KnowledgeGraph],
+    ) -> KnowledgeGraph:
+        ...
+
 SYSTEM_PROMPT = (
     "You extract knowledge graphs from text. Identify the key entities as nodes "
     "and the relationships between them as edges. Every edge must reference "

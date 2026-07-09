@@ -105,9 +105,11 @@ def ingest_unprocessed_documents(
             knowledge_base_embedding_store,
         )
         if knowledge_base_store.exists():
-            graph = _combine_knowledge_graphs(
-                [knowledge_base_store.load(), *graphs],
-                resolver,
+            existing = knowledge_base_store.load()
+            graph = (
+                resolver.combine_into(existing, graphs)
+                if resolver is not None
+                else combine_knowledge_graphs([existing, *graphs])
             )
             knowledge_base_store.save(graph)
         else:
