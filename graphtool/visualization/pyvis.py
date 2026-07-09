@@ -43,6 +43,7 @@ def _node_title(node: Node) -> str:
         [
             ("id", node.id),
             ("type", node.type),
+            ("suggested_type", node.suggested_type),
             ("chunk_ids", node.chunk_ids),
             ("properties", node.properties),
         ]

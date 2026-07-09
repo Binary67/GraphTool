@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphtool.graph.embedding_store import NodeEmbeddingRecord
+from graphtool.graph.taxonomy import UNCLASSIFIED_NODE_TYPE, normalize_type_name
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient, LLMClient
 from graphtool.llm.types import LLMMessage
@@ -273,6 +274,8 @@ def node_embedding_text(node: Node, relationship_context: Sequence[str] = ()) ->
         f"label: {node.label}",
         f"type: {node.type}",
     ]
+    if node.suggested_type:
+        parts.append(f"suggested_type: {node.suggested_type}")
     if node.aliases:
         parts.append(f"aliases: {', '.join(node.aliases)}")
     if node.properties:
@@ -323,6 +326,8 @@ def _merge_nodes(
 
     return existing.model_copy(
         update={
+            "type": _merge_node_type(existing, incoming),
+            "suggested_type": existing.suggested_type or incoming.suggested_type,
             "aliases": _unique_aliases(
                 existing.label,
                 [*existing.aliases, *alias_additions],
@@ -337,9 +342,8 @@ def _find_normalized_match(node: Node, canonical_nodes: Sequence[Node]) -> Node 
     if not incoming_names:
         return None
 
-    incoming_type = _normalize_name(node.type)
     for candidate in canonical_nodes:
-        if incoming_type != _normalize_name(candidate.type):
+        if not _comparable_node_types(node, candidate):
             continue
         if incoming_names & _normalized_names(candidate):
             return candidate
@@ -347,11 +351,10 @@ def _find_normalized_match(node: Node, canonical_nodes: Sequence[Node]) -> Node 
 
 
 def _same_type_candidates(node: Node, canonical_nodes: Sequence[Node]) -> list[Node]:
-    incoming_type = _normalize_name(node.type)
     return [
         candidate
         for candidate in canonical_nodes
-        if incoming_type == _normalize_name(candidate.type)
+        if _comparable_node_types(node, candidate)
     ]
 
 
@@ -365,7 +368,41 @@ def _normalized_names(node: Node) -> set[str]:
 
 def _normalize_name(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
-    return " ".join(normalized.split())
+    return " ".join(_singularize_word(word) for word in normalized.split())
+
+
+def _singularize_word(word: str) -> str:
+    if len(word) > 4 and word.endswith("ies"):
+        return f"{word[:-3]}y"
+    if (
+        len(word) > 4
+        and word.endswith(("ches", "shes", "sses", "xes", "zes"))
+    ):
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _comparable_node_types(left: Node, right: Node) -> bool:
+    left_type = normalize_type_name(left.type)
+    right_type = normalize_type_name(right.type)
+    return (
+        left_type == right_type
+        or left_type == UNCLASSIFIED_NODE_TYPE
+        or right_type == UNCLASSIFIED_NODE_TYPE
+    )
+
+
+def _merge_node_type(existing: Node, incoming: Node) -> str:
+    existing_type = normalize_type_name(existing.type)
+    incoming_type = normalize_type_name(incoming.type)
+    if (
+        existing_type == UNCLASSIFIED_NODE_TYPE
+        and incoming_type != UNCLASSIFIED_NODE_TYPE
+    ):
+        return incoming.type
+    return existing.type
 
 
 def _unique_aliases(label: str, aliases: Sequence[str]) -> list[str]:
@@ -468,6 +505,7 @@ def _node_payload(node: Node) -> dict[str, object]:
         "id": node.id,
         "label": node.label,
         "type": node.type,
+        "suggested_type": node.suggested_type,
         "aliases": node.aliases,
         "properties": node.properties,
     }

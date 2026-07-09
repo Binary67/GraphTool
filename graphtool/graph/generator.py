@@ -7,9 +7,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from graphtool.chunking.types import Chunk
+from graphtool.graph.taxonomy import (
+    CanonicalNodeType,
+    TaxonomySuggestionStore,
+    UNCLASSIFIED_NODE_TYPE,
+    canonical_node_type_text,
+    make_taxonomy_suggestion_records,
+    normalize_type_name,
+)
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.base import LLMClient
 from graphtool.llm.types import LLMMessage
@@ -37,8 +45,10 @@ SYSTEM_PROMPT = (
     "structure unless the content is explicitly about those concepts. Table "
     "contents can contain useful facts; extract those facts, not the table "
     "mechanics. Prefer a small graph of the most salient entities. Every edge "
-    "must reference existing node ids. Return only the structured nodes and "
-    "edges."
+    "must reference existing node ids. Node type must be one of: "
+    f"{canonical_node_type_text()}. If none of those types fit, use "
+    f"{UNCLASSIFIED_NODE_TYPE} and provide suggested_type with the missing "
+    "taxonomy type. Return only the structured nodes and edges."
 )
 
 USER_PROMPT_TEMPLATE = (
@@ -52,7 +62,6 @@ USER_PROMPT_TEMPLATE = (
 _STRUCTURAL_NODE_TYPES = {
     "chunk",
     "column",
-    "document",
     "file path",
     "heading",
     "link",
@@ -93,7 +102,16 @@ class _ExtractedNode(BaseModel):
 
     id: str
     label: str
-    type: str
+    type: CanonicalNodeType
+    suggested_type: str | None = None
+
+    @model_validator(mode="after")
+    def validate_suggested_type(self) -> "_ExtractedNode":
+        if self.type == UNCLASSIFIED_NODE_TYPE and not self.suggested_type:
+            raise ValueError("suggested_type is required for unclassified nodes")
+        if self.suggested_type is not None and not self.suggested_type.strip():
+            raise ValueError("suggested_type cannot be blank")
+        return self
 
 
 class _ExtractedEdge(BaseModel):
@@ -119,12 +137,14 @@ def generate_knowledge_graph(
     *,
     resolver: GraphResolver | None = None,
     dropped_edges_path: Path | None = None,
+    taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
 ) -> KnowledgeGraph:
     generated_chunks = [
         _generate_chunk_graph(
             chunk,
             llm,
             dropped_edges_path=dropped_edges_path,
+            taxonomy_suggestion_store=taxonomy_suggestion_store,
         )
         for chunk in chunks
     ]
@@ -151,6 +171,7 @@ def _generate_chunk_graph(
     llm: LLMClient,
     *,
     dropped_edges_path: Path | None = None,
+    taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
 ) -> _GeneratedChunkGraph:
     messages: Sequence[LLMMessage] = [
         LLMMessage(role="system", content=SYSTEM_PROMPT),
@@ -165,6 +186,15 @@ def _generate_chunk_graph(
     graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
     structural_node_ids = _structural_node_ids(graph.nodes, chunk)
     nodes = _dedupe_chunk_nodes(graph.nodes, structural_node_ids, chunk)
+    if taxonomy_suggestion_store is not None:
+        taxonomy_suggestion_store.append_many(
+            make_taxonomy_suggestion_records(
+                nodes=nodes,
+                source=chunk.source,
+                chunk_id=chunk.id,
+                model=_llm_model(llm),
+            )
+        )
     node_ids = {node.id for node in nodes}
     edges_by_key: dict[tuple[str, str, str], Edge] = {}
     for edge in graph.edges:
@@ -223,6 +253,7 @@ def _dedupe_chunk_nodes(
             id=node.id,
             label=node.label,
             type=node.type,
+            suggested_type=node.suggested_type,
             chunk_ids=[chunk.id],
         )
         existing = nodes_by_id.get(incoming.id)
@@ -231,7 +262,11 @@ def _dedupe_chunk_nodes(
             continue
 
         nodes_by_id[incoming.id] = existing.model_copy(
-            update={"aliases": _merge_aliases(existing, incoming)}
+            update={
+                "type": _merge_node_type(existing, incoming),
+                "aliases": _merge_aliases(existing, incoming),
+                "suggested_type": existing.suggested_type or incoming.suggested_type,
+            }
         )
 
     return list(nodes_by_id.values())
@@ -241,6 +276,10 @@ def _heading_path_text(chunk: Chunk) -> str:
     if not chunk.heading_path:
         return "(none)"
     return " > ".join(chunk.heading_path)
+
+
+def _llm_model(llm: LLMClient) -> str | None:
+    return getattr(llm, "model", None) or getattr(llm, "text_model", None)
 
 
 def _structural_node_ids(nodes: Sequence[_ExtractedNode], chunk: Chunk) -> set[str]:
@@ -403,6 +442,10 @@ def combine_knowledge_graphs(graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph
 
             nodes_by_id[node.id] = existing_node.model_copy(
                 update={
+                    "type": _merge_node_type(existing_node, node),
+                    "suggested_type": (
+                        existing_node.suggested_type or node.suggested_type
+                    ),
                     "aliases": _merge_aliases(existing_node, node),
                     "chunk_ids": _extend_unique(existing_node.chunk_ids, node.chunk_ids)
                 }
@@ -442,3 +485,14 @@ def _merge_aliases(existing: Node, incoming: Node) -> list[str]:
         additions.append(incoming.label)
     additions.extend(incoming.aliases)
     return _extend_unique(existing.aliases, additions)
+
+
+def _merge_node_type(existing: Node, incoming: Node) -> str:
+    existing_type = normalize_type_name(existing.type)
+    incoming_type = normalize_type_name(incoming.type)
+    if (
+        existing_type == UNCLASSIFIED_NODE_TYPE
+        and incoming_type != UNCLASSIFIED_NODE_TYPE
+    ):
+        return incoming.type
+    return existing.type

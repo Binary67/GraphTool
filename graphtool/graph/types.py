@@ -8,6 +8,7 @@ class Node(BaseModel):
     id: str
     label: str
     type: str
+    suggested_type: str | None = None
     aliases: list[str] = Field(default_factory=list)
     properties: dict[str, Any] = Field(default_factory=dict)
     chunk_ids: list[str] = Field(default_factory=list)

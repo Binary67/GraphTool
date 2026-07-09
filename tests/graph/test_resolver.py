@@ -273,6 +273,115 @@ def test_resolver_skips_embedding_candidates_with_different_types():
     assert embedding.batch_calls == []
 
 
+def test_resolver_merges_exact_id_when_types_differ():
+    resolver = SemanticEntityResolver(FakeLLM(), FakeEmbeddingClient())
+
+    graph = resolver.combine(
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="marketplace",
+                        label="Marketplace",
+                        type="unclassified",
+                        suggested_type="distribution_channel",
+                        chunk_ids=["chunk-1"],
+                    )
+                ],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="marketplace",
+                        label="Marketplace",
+                        type="feature",
+                        chunk_ids=["chunk-2"],
+                    )
+                ],
+                edges=[],
+            ),
+        ]
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].type == "feature"
+    assert graph.nodes[0].suggested_type == "distribution_channel"
+    assert graph.nodes[0].chunk_ids == ["chunk-1", "chunk-2"]
+
+
+def test_resolver_compares_unclassified_with_concrete_type_semantically():
+    llm = FakeLLM(
+        [
+            EntityResolutionDecision(
+                decision="merge",
+                target_node_id="marketplaces",
+                confidence=0.95,
+            )
+        ]
+    )
+    embedding = FakeEmbeddingClient(
+        {
+            "Plugin distribution": [1.0, 0.0],
+            "Marketplaces": [1.0, 0.0],
+        }
+    )
+    resolver = SemanticEntityResolver(llm, embedding)
+
+    graph = resolver.combine(
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="marketplaces", label="Marketplaces", type="feature"),
+                ],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="plugin-distribution",
+                        label="Plugin distribution",
+                        type="unclassified",
+                        suggested_type="distribution_channel",
+                    ),
+                ],
+                edges=[],
+            ),
+        ]
+    )
+
+    assert {node.id for node in graph.nodes} == {"marketplaces"}
+    assert len(llm.calls) == 1
+
+
+def test_resolver_merges_singular_plural_normalized_names():
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient()
+    resolver = SemanticEntityResolver(llm, embedding)
+
+    graph = resolver.combine(
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="marketplaces", label="Marketplaces", type="feature"),
+                ],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="marketplace", label="Marketplace", type="feature"),
+                ],
+                edges=[],
+            ),
+        ]
+    )
+
+    assert {node.id for node in graph.nodes} == {"marketplaces"}
+    assert graph.nodes[0].aliases == []
+    assert llm.calls == []
+    assert embedding.calls == []
+
+
 def test_resolver_reuses_matching_cached_embeddings(tmp_path):
     embedding = FakeEmbeddingClient({"OpenAI": [1.0, 0.0]})
     store = JsonEmbeddingStore(tmp_path / "embeddings.json")

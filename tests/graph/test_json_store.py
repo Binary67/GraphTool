@@ -102,6 +102,45 @@ def test_load_roundtrips_saved_graph(tmp_path):
     assert loaded == original
 
 
+def test_load_accepts_graph_json_without_suggested_type(tmp_path):
+    store = JsonGraphStore(tmp_path)
+    path = tmp_path / f"{source_key('doc.md')}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "nodes": [
+                    {
+                        "id": "a",
+                        "label": "A",
+                        "type": "Concept",
+                        "aliases": [],
+                        "properties": {},
+                        "chunk_ids": [],
+                    }
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "a",
+                        "target": "a",
+                        "label": "relates_to",
+                        "properties": {},
+                        "chunk_ids": [],
+                    }
+                ],
+                "metadata": {
+                    "source": "doc.md",
+                    "created_at": "2024-01-01T00:00:00Z",
+                },
+            }
+        )
+    )
+
+    loaded = store.load("doc.md")
+
+    assert loaded.nodes[0].suggested_type is None
+
+
 def test_load_raises_for_missing_file(tmp_path):
     import pytest
 

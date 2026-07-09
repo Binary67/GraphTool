@@ -12,6 +12,7 @@ from graphtool.graph import (
     JsonGraphEmbeddingStore,
     JsonGraphStore,
     JsonKnowledgeBaseStore,
+    JsonTaxonomySuggestionStore,
 )
 from graphtool.llm import AzureOpenAIClient, load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
@@ -24,6 +25,7 @@ GRAPHS_DIR = ROOT / "data" / "graphs"
 GRAPH_EMBEDDINGS_DIR = ROOT / "data" / "graph_embeddings"
 KNOWLEDGE_BASE_PATH = ROOT / "data" / "knowledge_base.json"
 KNOWLEDGE_BASE_EMBEDDINGS_PATH = ROOT / "data" / "knowledge_base_embeddings.json"
+TAXONOMY_SUGGESTIONS_PATH = ROOT / "data" / "taxonomy_suggestions.json"
 DROPPED_EDGES_PATH = ROOT / "data" / "dropped_edges.jsonl"
 LOGS_DIR = ROOT / "logs"
 VISUALIZATIONS_DIR = ROOT / "data" / "visualizations"
@@ -41,6 +43,9 @@ def main() -> None:
         graph_embedding_store = JsonGraphEmbeddingStore(GRAPH_EMBEDDINGS_DIR)
         knowledge_base_embedding_store = JsonEmbeddingStore(
             KNOWLEDGE_BASE_EMBEDDINGS_PATH
+        )
+        taxonomy_suggestion_store = JsonTaxonomySuggestionStore(
+            TAXONOMY_SUGGESTIONS_PATH
         )
         chunk_store = JsonChunkStore(CHUNKS_DIR)
         documents = load_markdown_documents(DOCUMENTS_DIR, source_root=ROOT)
@@ -68,6 +73,7 @@ def main() -> None:
                 graph_embedding_store=graph_embedding_store,
                 knowledge_base_embedding_store=knowledge_base_embedding_store,
                 dropped_edges_path=DROPPED_EDGES_PATH,
+                taxonomy_suggestion_store=taxonomy_suggestion_store,
                 min_candidate_similarity=(
                     config.entity_resolution_min_candidate_similarity
                 ),

@@ -198,6 +198,7 @@ def _node_text(node: Node, chunks_by_id: dict[str, Chunk]) -> str:
             node.id,
             node.label,
             node.type,
+            node.suggested_type or "",
             _properties_text(node.properties),
             *headings,
         ]

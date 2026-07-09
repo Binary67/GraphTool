@@ -10,6 +10,7 @@ from graphtool.graph.resolver import (
     DEFAULT_MIN_CANDIDATE_SIMILARITY,
     SemanticEntityResolver,
 )
+from graphtool.graph.taxonomy import TaxonomySuggestionStore
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
 from graphtool.retrieval.retriever import retrieve_context
@@ -79,6 +80,7 @@ def ingest_unprocessed_documents(
     graph_embedding_store: JsonGraphEmbeddingStore | None = None,
     knowledge_base_embedding_store: JsonEmbeddingStore | None = None,
     dropped_edges_path: Path | None = None,
+    taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
 ) -> list[KnowledgeGraph]:
     graphs = []
@@ -100,6 +102,7 @@ def ingest_unprocessed_documents(
             llm,
             resolver=resolver,
             dropped_edges_path=dropped_edges_path,
+            taxonomy_suggestion_store=taxonomy_suggestion_store,
         )
         graph_store.save(graph)
         graphs.append(graph)
