@@ -68,9 +68,11 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
     assert messages[0].role == "system"
     assert "knowledge graph" in messages[0].content
     assert messages[1].role == "user"
-    assert "Chunk ID: doc-chunk-0000" in messages[1].content
-    assert "Source: doc.md" in messages[1].content
+    assert "Chunk ID:" not in messages[1].content
+    assert "Source:" not in messages[1].content
+    assert "Context only, do not extract this as graph content" in messages[1].content
     assert "Heading path: Python" in messages[1].content
+    assert "Markdown content:" in messages[1].content
     assert "# Python" in messages[1].content
 
 
@@ -83,17 +85,13 @@ def test_generate_knowledge_graph_prompt_keeps_metadata_out_of_graph_content():
     system_prompt = messages[0].content
     user_prompt = messages[1].content
 
-    assert "important named entities or concise noun phrases" in system_prompt
-    assert "Do not create nodes for full actions" in system_prompt
-    assert "headings, chunk ids, source paths, URLs" in system_prompt
-    assert (
-        "Use prompt metadata such as Chunk ID, Source, and Heading path only as context"
-        in system_prompt
-    )
-    assert "never represent that metadata as nodes or edges" in system_prompt
-    assert "Express actions, predicates" in system_prompt
-    assert "Chunk ID: doc-chunk-0000" in user_prompt
-    assert "Source: doc.md" in user_prompt
+    assert "important domain entities" in system_prompt
+    assert "Do not create nodes for prompt metadata" in system_prompt
+    assert "source file paths" in system_prompt
+    assert "Table contents can contain useful facts" in system_prompt
+    assert "Chunk ID:" not in user_prompt
+    assert "Source:" not in user_prompt
+    assert "Context only, do not extract this as graph content" in user_prompt
     assert "Heading path: Python" in user_prompt
 
 
@@ -129,6 +127,59 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
     assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000"]
+
+
+def test_generate_knowledge_graph_filters_structural_nodes_and_edges():
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(id="skills", label="Skills", type="Feature"),
+                    _ExtractedNode(
+                        id="workflows",
+                        label="Reusable workflows",
+                        type="Concept",
+                    ),
+                    _ExtractedNode(
+                        id="chunk-wrapper",
+                        label="Chunk: Python",
+                        type="Concept",
+                    ),
+                    _ExtractedNode(id="table", label="Table", type="Table"),
+                    _ExtractedNode(id="source-path", label="doc.md", type="Concept"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="fact-edge",
+                        source="skills",
+                        target="workflows",
+                        label="used_for",
+                    ),
+                    _ExtractedEdge(
+                        id="table-edge",
+                        source="skills",
+                        target="table",
+                        label="appears_in",
+                    ),
+                    _ExtractedEdge(
+                        id="source-edge",
+                        source="source-path",
+                        target="skills",
+                        label="contains",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+
+    assert {node.id for node in graph.nodes} == {"skills", "workflows"}
+    assert len(graph.edges) == 1
+    assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].source == "skills"
+    assert graph.edges[0].target == "workflows"
+    assert graph.edges[0].label == "used_for"
 
 
 def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp_path):
@@ -215,6 +266,55 @@ def test_generate_knowledge_graph_logs_dropped_edges_to_run_log(tmp_path):
             "WARNING Skipped extracted edge missing-edge in doc-chunk-0000: "
             "missing target node missing-node"
         ) in log_files[0].read_text(encoding="utf-8")
+    finally:
+        _close_logger(logger)
+
+
+def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
+    logger = configure_run_logger(tmp_path / "logs")
+    try:
+        fake = FakeLLM(
+            [
+                _extracted_graph(
+                    nodes=[
+                        _ExtractedNode(id="skills", label="Skills", type="Feature"),
+                        _ExtractedNode(id="workflow", label="Workflow", type="Concept"),
+                        _ExtractedNode(id="table", label="Table", type="Table"),
+                    ],
+                    edges=[
+                        _ExtractedEdge(
+                            id="fact-edge",
+                            source="skills",
+                            target="workflow",
+                            label="supports",
+                        ),
+                        _ExtractedEdge(
+                            id="table-edge",
+                            source="skills",
+                            target="table",
+                            label="appears_in",
+                        ),
+                    ],
+                )
+            ]
+        )
+
+        generate_knowledge_graph([_chunk()], "doc.md", fake)
+        _flush_logger(logger)
+
+        log_files = list((tmp_path / "logs").glob("graphtool-*.log"))
+        assert len(log_files) == 1
+        text = log_files[0].read_text(encoding="utf-8")
+        assert (
+            "INFO Generated chunk graph source=doc.md chunk=doc-chunk-0000 "
+            "raw_nodes=3 kept_nodes=2 dropped_structural_nodes=1 "
+            "raw_edges=2 kept_edges=1 dropped_edges=1"
+        ) in text
+        assert (
+            "INFO Generated document graph source=doc.md chunks=1 "
+            "raw_nodes=3 kept_nodes=2 dropped_structural_nodes=1 "
+            "raw_edges=2 kept_edges=1 dropped_edges=1 final_nodes=2 final_edges=1"
+        ) in text
     finally:
         _close_logger(logger)
 

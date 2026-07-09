@@ -1,6 +1,8 @@
 import json
 import logging
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -28,25 +30,62 @@ class GraphResolver(Protocol):
         ...
 
 SYSTEM_PROMPT = (
-    "You extract focused knowledge graphs from markdown text. Create nodes only "
-    "for important named entities or concise noun phrases that represent domain "
-    "concepts, products, tools, people, organizations, APIs, files, features, "
-    "systems, or other meaningful entities. Do not create nodes for full actions, "
-    "sentences, claims, headings, chunk ids, source paths, URLs, examples-as-examples, "
-    "table scaffolding, or incidental wording. Use prompt metadata such as Chunk ID, "
-    "Source, and Heading path only as context; never represent that metadata as nodes "
-    "or edges. Express actions, predicates, capabilities, ownership, usage, containment, "
-    "dependency, and other relationships as edges. Every edge must reference existing "
-    "node ids. Return only the structured nodes and edges."
+    "You extract compact knowledge graphs from markdown content. Identify only "
+    "important domain entities as nodes and meaningful relationships as edges. "
+    "Do not create nodes for prompt metadata, chunks, source file paths, "
+    "markdown headings, tables, rows, columns, URLs, or generic document "
+    "structure unless the content is explicitly about those concepts. Table "
+    "contents can contain useful facts; extract those facts, not the table "
+    "mechanics. Prefer a small graph of the most salient entities. Every edge "
+    "must reference existing node ids. Return only the structured nodes and "
+    "edges."
 )
 
 USER_PROMPT_TEMPLATE = (
-    "Extract the knowledge graph from this markdown chunk.\n\n"
-    "Chunk ID: {chunk_id}\n"
-    "Source: {source}\n"
+    "Extract a compact knowledge graph from the markdown content below.\n\n"
+    "Context only, do not extract this as graph content:\n"
     "Heading path: {heading_path}\n\n"
+    "Markdown content:\n"
     "{markdown}"
 )
+
+_STRUCTURAL_NODE_TYPES = {
+    "chunk",
+    "column",
+    "document",
+    "file path",
+    "heading",
+    "link",
+    "markdown table",
+    "row",
+    "source",
+    "source path",
+    "table",
+    "url",
+}
+
+_STRUCTURAL_NODE_LABELS = {
+    "chunk",
+    "column",
+    "document",
+    "file path",
+    "heading",
+    "markdown table",
+    "row",
+    "source",
+    "source path",
+    "table",
+}
+
+
+@dataclass(frozen=True)
+class _GeneratedChunkGraph:
+    graph: KnowledgeGraph
+    raw_nodes: int
+    kept_nodes: int
+    dropped_structural_nodes: int
+    raw_edges: int
+    kept_edges: int
 
 
 class _ExtractedNode(BaseModel):
@@ -81,7 +120,7 @@ def generate_knowledge_graph(
     resolver: GraphResolver | None = None,
     dropped_edges_path: Path | None = None,
 ) -> KnowledgeGraph:
-    graphs = [
+    generated_chunks = [
         _generate_chunk_graph(
             chunk,
             llm,
@@ -89,11 +128,13 @@ def generate_knowledge_graph(
         )
         for chunk in chunks
     ]
+    graphs = [generated.graph for generated in generated_chunks]
     graph = (
         resolver.combine(graphs)
         if resolver is not None
         else combine_knowledge_graphs(graphs)
     )
+    _log_document_graph(source, len(chunks), generated_chunks, graph)
     return graph.model_copy(
         update={
             "metadata": GraphMetadata(
@@ -110,20 +151,19 @@ def _generate_chunk_graph(
     llm: LLMClient,
     *,
     dropped_edges_path: Path | None = None,
-) -> KnowledgeGraph:
+) -> _GeneratedChunkGraph:
     messages: Sequence[LLMMessage] = [
         LLMMessage(role="system", content=SYSTEM_PROMPT),
         LLMMessage(
             role="user",
             content=USER_PROMPT_TEMPLATE.format(
-                chunk_id=chunk.id,
-                source=chunk.source,
-                heading_path=" > ".join(chunk.heading_path),
+                heading_path=_heading_path_text(chunk),
                 markdown=chunk.text,
             ),
         ),
     ]
     graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
+    structural_node_ids = _structural_node_ids(graph.nodes, chunk)
     nodes = [
         Node(
             id=node.id,
@@ -132,10 +172,14 @@ def _generate_chunk_graph(
             chunk_ids=[chunk.id],
         )
         for node in graph.nodes
+        if node.id not in structural_node_ids
     ]
     node_ids = {node.id for node in nodes}
     edges = []
     for edge in graph.edges:
+        if edge.source in structural_node_ids or edge.target in structural_node_ids:
+            continue
+
         missing = []
         if edge.source not in node_ids:
             missing.append("source")
@@ -155,7 +199,129 @@ def _generate_chunk_graph(
             )
         )
 
-    return KnowledgeGraph(nodes=nodes, edges=edges)
+    generated = _GeneratedChunkGraph(
+        graph=KnowledgeGraph(nodes=nodes, edges=edges),
+        raw_nodes=len(graph.nodes),
+        kept_nodes=len(nodes),
+        dropped_structural_nodes=len(structural_node_ids),
+        raw_edges=len(graph.edges),
+        kept_edges=len(edges),
+    )
+    _log_chunk_graph(chunk, generated)
+    return generated
+
+
+def _heading_path_text(chunk: Chunk) -> str:
+    if not chunk.heading_path:
+        return "(none)"
+    return " > ".join(chunk.heading_path)
+
+
+def _structural_node_ids(nodes: Sequence[_ExtractedNode], chunk: Chunk) -> set[str]:
+    return {
+        node.id
+        for node in nodes
+        if _is_structural_node(node, chunk)
+    }
+
+
+def _is_structural_node(node: _ExtractedNode, chunk: Chunk) -> bool:
+    normalized_type = _normalize_structural_text(node.type)
+    if normalized_type in _STRUCTURAL_NODE_TYPES:
+        return True
+
+    normalized_label = _normalize_structural_text(node.label)
+    if normalized_label in _STRUCTURAL_NODE_LABELS:
+        return True
+
+    metadata_values = _source_metadata_values(chunk)
+    normalized_id = _normalize_structural_text(node.id)
+    if normalized_id in metadata_values or normalized_label in metadata_values:
+        return True
+
+    return _is_chunk_wrapper(normalized_label, _heading_metadata_values(chunk))
+
+
+def _source_metadata_values(chunk: Chunk) -> set[str]:
+    values = {
+        chunk.id,
+        chunk.source,
+    }
+    return {
+        normalized
+        for normalized in (_normalize_structural_text(value) for value in values)
+        if normalized
+    }
+
+
+def _heading_metadata_values(chunk: Chunk) -> set[str]:
+    values = {
+        _heading_path_text(chunk),
+        *chunk.heading_path,
+    }
+    return {
+        normalized
+        for normalized in (_normalize_structural_text(value) for value in values)
+        if normalized
+    }
+
+
+def _is_chunk_wrapper(normalized_label: str, metadata_values: set[str]) -> bool:
+    if not normalized_label.startswith("chunk "):
+        return False
+
+    label_without_prefix = normalized_label.removeprefix("chunk ").strip()
+    return label_without_prefix in metadata_values
+
+
+def _normalize_structural_text(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
+    return " ".join(normalized.split())
+
+
+def _log_chunk_graph(chunk: Chunk, generated: _GeneratedChunkGraph) -> None:
+    RUN_LOGGER.info(
+        "Generated chunk graph source=%s chunk=%s raw_nodes=%s kept_nodes=%s "
+        "dropped_structural_nodes=%s raw_edges=%s kept_edges=%s dropped_edges=%s",
+        chunk.source,
+        chunk.id,
+        generated.raw_nodes,
+        generated.kept_nodes,
+        generated.dropped_structural_nodes,
+        generated.raw_edges,
+        generated.kept_edges,
+        generated.raw_edges - generated.kept_edges,
+    )
+
+
+def _log_document_graph(
+    source: str,
+    chunk_count: int,
+    generated_chunks: Sequence[_GeneratedChunkGraph],
+    graph: KnowledgeGraph,
+) -> None:
+    raw_nodes = sum(generated.raw_nodes for generated in generated_chunks)
+    kept_nodes = sum(generated.kept_nodes for generated in generated_chunks)
+    raw_edges = sum(generated.raw_edges for generated in generated_chunks)
+    kept_edges = sum(generated.kept_edges for generated in generated_chunks)
+    RUN_LOGGER.info(
+        "Generated document graph source=%s chunks=%s raw_nodes=%s kept_nodes=%s "
+        "dropped_structural_nodes=%s raw_edges=%s kept_edges=%s dropped_edges=%s "
+        "final_nodes=%s final_edges=%s",
+        source,
+        chunk_count,
+        raw_nodes,
+        kept_nodes,
+        sum(
+            generated.dropped_structural_nodes
+            for generated in generated_chunks
+        ),
+        raw_edges,
+        kept_edges,
+        raw_edges - kept_edges,
+        len(graph.nodes),
+        len(graph.edges),
+    )
 
 
 def _record_dropped_edge(
