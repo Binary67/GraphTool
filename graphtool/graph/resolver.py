@@ -104,8 +104,9 @@ class SemanticEntityResolver:
         graph = KnowledgeGraph(nodes=canonical_nodes, edges=edges)
 
         if self._embedding_store is not None:
+            self._ensure_embeddings(canonical_nodes)
             self._records = {
-                node.id: self._ensure_embedding(node)
+                node.id: self._records[node.id]
                 for node in canonical_nodes
             }
             self._embedding_store.save(self._records)
@@ -178,10 +179,10 @@ class SemanticEntityResolver:
             node,
             self._relationship_contexts.get(node.id, []),
         )
-        incoming_vector = self._embedding_client.embed_text(incoming_text)
+        incoming_vector = self._embedding_client.embed_texts([incoming_text])[0]
+        candidate_records = self._ensure_embeddings(canonical_nodes)
         scored = []
-        for candidate in canonical_nodes:
-            record = self._ensure_embedding(candidate)
+        for candidate, record in zip(canonical_nodes, candidate_records, strict=True):
             score = _cosine_similarity(incoming_vector, record.vector)
             if score >= self._min_candidate_similarity:
                 scored.append((candidate, score))
@@ -190,28 +191,50 @@ class SemanticEntityResolver:
         return scored[: self._top_k]
 
     def _ensure_embedding(self, node: Node) -> NodeEmbeddingRecord:
-        text = node_embedding_text(
-            node,
-            self._relationship_contexts.get(node.id, []),
-        )
-        text_hash = embedding_input_hash(text)
-        existing = self._records.get(node.id)
-        if (
-            existing is not None
-            and existing.embedding_model == self._embedding_client.embedding_model
-            and existing.embedding_input_hash == text_hash
-        ):
-            return existing
+        return self._ensure_embeddings([node])[0]
 
-        vector = self._embedding_client.embed_text(text)
-        record = NodeEmbeddingRecord(
-            node_id=node.id,
-            embedding_model=self._embedding_client.embedding_model,
-            embedding_input_hash=text_hash,
-            vector=vector,
-        )
-        self._records[node.id] = record
-        return record
+    def _ensure_embeddings(self, nodes: Sequence[Node]) -> list[NodeEmbeddingRecord]:
+        records: list[NodeEmbeddingRecord | None] = []
+        missing: list[tuple[int, Node, str, str]] = []
+        embedding_model = self._embedding_client.embedding_model
+
+        for node in nodes:
+            text = node_embedding_text(
+                node,
+                self._relationship_contexts.get(node.id, []),
+            )
+            text_hash = embedding_input_hash(text)
+            existing = self._records.get(node.id)
+            if (
+                existing is not None
+                and existing.embedding_model == embedding_model
+                and existing.embedding_input_hash == text_hash
+            ):
+                records.append(existing)
+                continue
+
+            records.append(None)
+            missing.append((len(records) - 1, node, text_hash, text))
+
+        if missing:
+            vectors = self._embedding_client.embed_texts(
+                [text for _, _, _, text in missing]
+            )
+            for (index, node, text_hash, _), vector in zip(
+                missing,
+                vectors,
+                strict=True,
+            ):
+                record = NodeEmbeddingRecord(
+                    node_id=node.id,
+                    embedding_model=embedding_model,
+                    embedding_input_hash=text_hash,
+                    vector=vector,
+                )
+                self._records[node.id] = record
+                records[index] = record
+
+        return [record for record in records if record is not None]
 
     def _judge_same_entity(
         self,

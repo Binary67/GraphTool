@@ -44,11 +44,17 @@ class AzureOpenAIClient:
         return response.output_parsed
 
     def embed_text(self, text: str) -> list[float]:
-        response = self._client.embeddings.create(
-            model=self._config.embedding_model,
-            input=text,
-        )
-        return list(response.data[0].embedding)
+        return self.embed_texts([text])[0]
+
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        vectors = []
+        for batch in _batches(texts, self._config.embedding_batch_size):
+            response = self._client.embeddings.create(
+                model=self._config.embedding_model,
+                input=batch,
+            )
+            vectors.extend(list(item.embedding) for item in response.data)
+        return vectors
 
 
 def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, str]]:
@@ -58,4 +64,11 @@ def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, str]]:
             "content": message.content,
         }
         for message in messages
+    ]
+
+
+def _batches(values: Sequence[str], batch_size: int) -> list[list[str]]:
+    return [
+        list(values[index : index + batch_size])
+        for index in range(0, len(values), batch_size)
     ]

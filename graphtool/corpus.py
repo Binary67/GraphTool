@@ -162,7 +162,11 @@ def _make_semantic_resolver(
     *,
     source: str | None = None,
 ) -> SemanticEntityResolver | None:
-    if not hasattr(llm, "embed_text") or not hasattr(llm, "embedding_model"):
+    if (
+        not hasattr(llm, "embed_text")
+        or not hasattr(llm, "embed_texts")
+        or not hasattr(llm, "embedding_model")
+    ):
         return None
 
     embedding_store = None

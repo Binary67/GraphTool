@@ -33,3 +33,7 @@ class EmbeddingClient(Protocol):
     def embed_text(self, text: str) -> list[float]:
         """Embed a single text value."""
         ...
+
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed multiple text values."""
+        ...

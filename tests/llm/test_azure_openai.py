@@ -46,11 +46,22 @@ class FakeEmbeddings:
 
     def create(self, **kwargs):
         self.create_calls.append(kwargs)
-        return FakeEmbeddingResponse()
+        texts = kwargs["input"]
+        if isinstance(texts, str):
+            texts = [texts]
+        return FakeEmbeddingResponse(texts)
 
 
 class FakeEmbeddingResponse:
-    data = [type("Embedding", (), {"embedding": [0.1, 0.2, 0.3]})()]
+    def __init__(self, texts):
+        self.data = [
+            type(
+                "Embedding",
+                (),
+                {"embedding": [float(index), float(len(text))]},
+            )()
+            for index, text in enumerate(texts)
+        ]
 
 
 class Person(BaseModel):
@@ -148,10 +159,37 @@ def test_embed_text_uses_embeddings_create(monkeypatch):
     embedding = client.embed_text("OpenAI organization")
 
     assert client.embedding_model == "embedding-deployment"
-    assert embedding == [0.1, 0.2, 0.3]
+    assert embedding == [0.0, 19.0]
     assert FakeOpenAI.instances[0].embeddings.create_calls == [
         {
             "model": "embedding-deployment",
-            "input": "OpenAI organization",
+            "input": ["OpenAI organization"],
         }
+    ]
+
+
+def test_embed_texts_batches_inputs_and_preserves_order(monkeypatch):
+    FakeOpenAI.instances = []
+    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
+    config = AzureOpenAIConfig(
+        endpoint="https://example.openai.azure.com/openai/v1/",
+        api_key="test-key",
+        model="test-deployment",
+        embedding_model="embedding-deployment",
+        embedding_batch_size=2,
+    )
+    client = AzureOpenAIClient(config)
+
+    embeddings = client.embed_texts(["alpha", "beta", "gamma"])
+
+    assert embeddings == [[0.0, 5.0], [1.0, 4.0], [0.0, 5.0]]
+    assert FakeOpenAI.instances[0].embeddings.create_calls == [
+        {
+            "model": "embedding-deployment",
+            "input": ["alpha", "beta"],
+        },
+        {
+            "model": "embedding-deployment",
+            "input": ["gamma"],
+        },
     ]

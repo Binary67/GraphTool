@@ -14,9 +14,17 @@ class FakeEmbeddingClient:
     def __init__(self, vectors: dict[str, list[float]] | None = None) -> None:
         self.vectors = vectors or {}
         self.calls: list[str] = []
+        self.batch_calls: list[list[str]] = []
 
     def embed_text(self, text: str) -> list[float]:
         self.calls.append(text)
+        return self._vector_for(text)
+
+    def embed_texts(self, texts) -> list[list[float]]:
+        self.batch_calls.append(list(texts))
+        return [self.embed_text(text) for text in texts]
+
+    def _vector_for(self, text: str) -> list[float]:
         label_line = text.splitlines()[0] if text else ""
         for key, vector in self.vectors.items():
             if key in label_line:
@@ -265,6 +273,44 @@ def test_resolver_reuses_matching_cached_embeddings(tmp_path):
 
     assert len(embedding.calls) == first_call_count
     assert store.load()["openai"].vector == [1.0, 0.0]
+
+
+def test_resolver_batches_uncached_candidate_embeddings():
+    embedding = FakeEmbeddingClient(
+        {
+            "Alpha": [1.0, 0.0, 0.0],
+            "Beta": [0.0, 1.0, 0.0],
+            "Gamma": [0.0, 0.0, 1.0],
+        }
+    )
+    resolver = SemanticEntityResolver(
+        FakeLLM(),
+        embedding,
+        min_candidate_similarity=1.1,
+    )
+    existing = KnowledgeGraph(
+        nodes=[
+            Node(id="alpha", label="Alpha", type="Concept"),
+            Node(id="beta", label="Beta", type="Concept"),
+        ],
+        edges=[],
+    )
+
+    graph = resolver.combine_into(
+        existing,
+        [
+            KnowledgeGraph(
+                nodes=[Node(id="gamma", label="Gamma", type="Concept")],
+                edges=[],
+            )
+        ],
+    )
+
+    assert {node.id for node in graph.nodes} == {"alpha", "beta", "gamma"}
+    assert any(
+        batch == ["label: Alpha\ntype: Concept", "label: Beta\ntype: Concept"]
+        for batch in embedding.batch_calls
+    )
 
 
 def test_combine_into_resolves_only_new_nodes_against_existing(tmp_path):

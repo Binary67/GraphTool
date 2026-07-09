@@ -49,6 +49,7 @@ class FakeSemanticLLM:
         self.vectors = vectors
         self.calls: list[tuple[list[LLMMessage], type]] = []
         self.embedding_calls: list[str] = []
+        self.embedding_batch_calls: list[list[str]] = []
         self._response_index = 0
         self._decision_index = 0
 
@@ -68,6 +69,13 @@ class FakeSemanticLLM:
 
     def embed_text(self, text: str) -> list[float]:
         self.embedding_calls.append(text)
+        return self._vector_for(text)
+
+    def embed_texts(self, texts) -> list[list[float]]:
+        self.embedding_batch_calls.append(list(texts))
+        return [self.embed_text(text) for text in texts]
+
+    def _vector_for(self, text: str) -> list[float]:
         label_line = text.splitlines()[0] if text else ""
         for key, vector in self.vectors.items():
             if key in label_line:
