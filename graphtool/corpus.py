@@ -170,8 +170,7 @@ def _make_semantic_resolver(
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
 ) -> SemanticEntityResolver | None:
     if (
-        not hasattr(llm, "embed_text")
-        or not hasattr(llm, "embed_texts")
+        not hasattr(llm, "embed_texts")
         or not hasattr(llm, "embedding_model")
     ):
         return None

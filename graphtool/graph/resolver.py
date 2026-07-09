@@ -191,9 +191,6 @@ class SemanticEntityResolver:
         scored.sort(key=lambda item: (-item[1], item[0].id))
         return scored[: self._top_k]
 
-    def _ensure_embedding(self, node: Node) -> NodeEmbeddingRecord:
-        return self._ensure_embeddings([node])[0]
-
     def _ensure_embeddings(self, nodes: Sequence[Node]) -> list[NodeEmbeddingRecord]:
         records: list[NodeEmbeddingRecord | None] = []
         missing: list[tuple[int, Node, str, str]] = []

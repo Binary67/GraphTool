@@ -67,13 +67,11 @@ class FakeSemanticLLM:
         self._response_index += 1
         return response
 
-    def embed_text(self, text: str) -> list[float]:
-        self.embedding_calls.append(text)
-        return self._vector_for(text)
-
     def embed_texts(self, texts) -> list[list[float]]:
-        self.embedding_batch_calls.append(list(texts))
-        return [self.embed_text(text) for text in texts]
+        batch = list(texts)
+        self.embedding_batch_calls.append(batch)
+        self.embedding_calls.extend(batch)
+        return [self._vector_for(text) for text in batch]
 
     def _vector_for(self, text: str) -> list[float]:
         label_line = text.splitlines()[0] if text else ""

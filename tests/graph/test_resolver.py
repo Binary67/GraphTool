@@ -16,13 +16,11 @@ class FakeEmbeddingClient:
         self.calls: list[str] = []
         self.batch_calls: list[list[str]] = []
 
-    def embed_text(self, text: str) -> list[float]:
-        self.calls.append(text)
-        return self._vector_for(text)
-
     def embed_texts(self, texts) -> list[list[float]]:
-        self.batch_calls.append(list(texts))
-        return [self.embed_text(text) for text in texts]
+        batch = list(texts)
+        self.batch_calls.append(batch)
+        self.calls.extend(batch)
+        return [self._vector_for(text) for text in batch]
 
     def _vector_for(self, text: str) -> list[float]:
         label_line = text.splitlines()[0] if text else ""

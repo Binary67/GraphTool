@@ -44,9 +44,6 @@ class AzureOpenAIClient:
 
         return response.output_parsed
 
-    def embed_text(self, text: str) -> list[float]:
-        return self.embed_texts([text])[0]
-
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         vectors = []
         for batch in _batches(texts, self._config.embedding_batch_size):

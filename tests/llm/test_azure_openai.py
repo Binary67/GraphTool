@@ -142,24 +142,6 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
     ]
 
 
-def test_embed_text_uses_embeddings_create(monkeypatch):
-    FakeOpenAI.instances = []
-    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
-    config = _config()
-    client = AzureOpenAIClient(config, text_deployment="text-deployment")
-
-    embedding = client.embed_text("OpenAI organization")
-
-    assert client.embedding_model == "embedding-deployment"
-    assert embedding == [0.0, 19.0]
-    assert FakeOpenAI.instances[0].embeddings.create_calls == [
-        {
-            "model": "embedding-deployment",
-            "input": ["OpenAI organization"],
-        }
-    ]
-
-
 def test_embed_texts_batches_inputs_and_preserves_order(monkeypatch):
     FakeOpenAI.instances = []
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
