@@ -15,8 +15,6 @@ def make_retrieve_knowledge_context_tool(
     knowledge_base_store: JsonKnowledgeBaseStore | None = None,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
-    top_nodes: int = 5,
-    top_edges: int = 5,
     top_chunks: int = 5,
 ) -> BaseTool:
     def retrieve_knowledge_context(query: str) -> str:
@@ -28,8 +26,6 @@ def make_retrieve_knowledge_context_tool(
             knowledge_base_store=knowledge_base_store,
             embedding_client=embedding_client,
             chunk_embedding_store=chunk_embedding_store,
-            top_nodes=top_nodes,
-            top_edges=top_edges,
             top_chunks=top_chunks,
         )
         return RetrievedContext(

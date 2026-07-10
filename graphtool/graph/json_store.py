@@ -35,6 +35,9 @@ class JsonGraphStore:
             for path in sorted(self._directory.glob("*.json"))
         ]
 
+    def delete(self, source: str) -> None:
+        self._path_for(source).unlink(missing_ok=True)
+
     def _path_for(self, name: str) -> Path:
         return self._directory / f"{source_key(name)}.json"
 

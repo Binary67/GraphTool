@@ -196,6 +196,19 @@ class JsonTaxonomySuggestionStore:
     def exists(self) -> bool:
         return self._path.exists()
 
+    def replace_source(
+        self,
+        source: str,
+        records: Sequence[TaxonomySuggestionRecord],
+    ) -> None:
+        retained = [record for record in self.load() if record.source != source]
+        self.save([*retained, *records])
+
+    def delete_source(self, source: str) -> None:
+        if not self.exists():
+            return
+        self.save([record for record in self.load() if record.source != source])
+
 
 class JsonTaxonomyPromotionAuditStore:
     def __init__(self, path: str | Path) -> None:

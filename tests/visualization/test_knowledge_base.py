@@ -29,6 +29,7 @@ def _graph(source: str, node_id: str, label: str) -> KnowledgeGraph:
         edges=[],
         metadata=GraphMetadata(
             source=source,
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
@@ -87,6 +88,21 @@ def test_export_knowledge_base_visualizations_uses_cached_combined_graph(tmp_pat
     combined_html = paths[-1].read_text()
     assert "Cached Only" in combined_html
     assert '"id": "alpha"' not in combined_html
+
+
+def test_export_knowledge_base_visualizations_removes_deleted_document_html(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    deleted_source = "documents/deleted.md"
+    graph_store.save(_graph(deleted_source, "deleted", "Deleted"))
+    output_dir = tmp_path / "visualizations"
+    paths = export_knowledge_base_visualizations(graph_store, output_dir)
+    deleted_path = paths[0]
+    assert deleted_path.exists()
+
+    graph_store.delete(deleted_source)
+    export_knowledge_base_visualizations(graph_store, output_dir)
+
+    assert deleted_path.exists() is False
 
 
 def test_export_knowledge_base_visualizations_raises_for_missing_metadata(tmp_path):

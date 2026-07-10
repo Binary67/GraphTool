@@ -17,6 +17,7 @@ def _sample_graph(source: str = "doc.md") -> KnowledgeGraph:
         edges=[Edge(id="e1", source="a", target="a", label="relates_to")],
         metadata=GraphMetadata(
             source=source,
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
@@ -57,6 +58,7 @@ def test_save_writes_node_and_edge_chunk_ids(tmp_path):
         ],
         metadata=GraphMetadata(
             source="doc.md",
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
@@ -82,6 +84,7 @@ def test_save_writes_node_aliases(tmp_path):
         edges=[],
         metadata=GraphMetadata(
             source="doc.md",
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
@@ -130,6 +133,7 @@ def test_load_accepts_graph_json_without_suggested_type(tmp_path):
                 ],
                 "metadata": {
                     "source": "doc.md",
+                    "content_hash": "hash",
                     "created_at": "2024-01-01T00:00:00Z",
                 },
             }
@@ -177,6 +181,15 @@ def test_exists_returns_true_only_for_saved_source(tmp_path):
 
     assert store.exists("doc.md") is True
     assert store.exists("missing.md") is False
+
+
+def test_delete_removes_saved_source(tmp_path):
+    store = JsonGraphStore(tmp_path)
+    store.save(_sample_graph("doc.md"))
+
+    store.delete("doc.md")
+
+    assert store.exists("doc.md") is False
 
 
 def test_load_all_returns_saved_graphs_in_filename_order(tmp_path):
@@ -250,3 +263,7 @@ def test_graph_embedding_store_uses_source_path(tmp_path):
     assert store.exists("docs/openai.md") is True
     assert store.load("docs/openai.md") == {"openai": record}
     assert (tmp_path / f"{source_key('docs/openai.md')}.json").exists()
+
+    store.delete("docs/openai.md")
+
+    assert store.exists("docs/openai.md") is False

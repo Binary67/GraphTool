@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added exact document content hashing and per-source node and edge provenance.
+- Added incremental document synchronization for additions, changes, and deletions.
+- Added source-filtered knowledge graph views.
+
+### Changed
+
+- Updated graph, chunk, embedding, taxonomy, and visualization caches when
+  documents change.
+
 ## [0.6.0]
 
 ### Added

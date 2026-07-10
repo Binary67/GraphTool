@@ -16,17 +16,23 @@ def export_knowledge_base_visualizations(
     path = Path(output_dir)
     graphs = graph_store.load_all()
     paths = []
+    expected_document_paths = set()
 
     for graph in graphs:
         if graph.metadata is None:
             raise ValueError("Cannot visualize graph without metadata.source.")
 
-        paths.append(
-            export_graph_html(
-                graph,
-                path / "documents" / f"{source_key(graph.metadata.source)}.html",
-            )
+        document_path = (
+            path / "documents" / f"{source_key(graph.metadata.source)}.html"
         )
+        expected_document_paths.add(document_path.resolve())
+        paths.append(export_graph_html(graph, document_path))
+
+    documents_path = path / "documents"
+    if documents_path.exists():
+        for existing_path in documents_path.glob("*.html"):
+            if existing_path.resolve() not in expected_document_paths:
+                existing_path.unlink()
 
     paths.append(
         export_graph_html(

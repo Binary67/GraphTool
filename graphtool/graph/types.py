@@ -12,6 +12,7 @@ class Node(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     properties: dict[str, Any] = Field(default_factory=dict)
     chunk_ids: list[str] = Field(default_factory=list)
+    provenance: list["NodeProvenance"] = Field(default_factory=list)
 
 
 class Edge(BaseModel):
@@ -21,10 +22,36 @@ class Edge(BaseModel):
     label: str
     properties: dict[str, Any] = Field(default_factory=dict)
     chunk_ids: list[str] = Field(default_factory=list)
+    provenance: list["EdgeProvenance"] = Field(default_factory=list)
+
+
+class NodeProvenance(BaseModel):
+    source: str
+    content_hash: str
+    node_id: str
+    label: str
+    type: str
+    suggested_type: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    properties: dict[str, Any] = Field(default_factory=dict)
+    chunk_ids: list[str] = Field(default_factory=list)
+    resolution_aliases: list[str] = Field(default_factory=list)
+
+
+class EdgeProvenance(BaseModel):
+    source: str
+    content_hash: str
+    edge_id: str
+    source_node_id: str
+    target_node_id: str
+    label: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+    chunk_ids: list[str] = Field(default_factory=list)
 
 
 class GraphMetadata(BaseModel):
     source: str
+    content_hash: str
     model: str | None = None
     created_at: datetime
 

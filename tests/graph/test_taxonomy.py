@@ -44,6 +44,7 @@ def _graph(source: str, node_ids: list[str]) -> KnowledgeGraph:
         edges=[],
         metadata=GraphMetadata(
             source=source,
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )

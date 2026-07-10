@@ -34,6 +34,7 @@ def _sample_graph() -> KnowledgeGraph:
         ],
         metadata=GraphMetadata(
             source="doc.md",
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )

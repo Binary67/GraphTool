@@ -10,13 +10,18 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from graphtool.chunking.types import Chunk
+from graphtool.graph.provenance import (
+    add_edge_provenance,
+    add_node_provenance,
+    merge_edges,
+    merge_nodes,
+)
 from graphtool.graph.taxonomy import (
     CanonicalNodeType,
     TaxonomySuggestionStore,
     UNCLASSIFIED_NODE_TYPE,
     canonical_node_type_text,
     make_taxonomy_suggestion_records,
-    normalize_type_name,
 )
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.base import LLMClient
@@ -151,6 +156,7 @@ def generate_knowledge_graph(
     source: str,
     llm: LLMClient,
     *,
+    content_hash: str,
     resolver: GraphResolver | None = None,
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
@@ -188,6 +194,7 @@ def generate_knowledge_graph(
         update={
             "metadata": GraphMetadata(
                 source=source,
+                content_hash=content_hash,
                 model=None,
                 created_at=datetime.now(timezone.utc),
             )
@@ -460,67 +467,48 @@ def _missing_edge_description(edge: _ExtractedEdge, missing: list[str]) -> str:
 def combine_knowledge_graphs(graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
     nodes_by_id: dict[str, Node] = {}
     edges_by_key: dict[tuple[str, str, str], Edge] = {}
+    used_edge_ids: set[str] = set()
+    next_edge_index = 1
 
     for graph in graphs:
         for node in graph.nodes:
+            node = add_node_provenance(node, graph.metadata)
             existing_node = nodes_by_id.get(node.id)
             if existing_node is None:
                 nodes_by_id[node.id] = node
                 continue
 
-            nodes_by_id[node.id] = existing_node.model_copy(
-                update={
-                    "type": _merge_node_type(existing_node, node),
-                    "suggested_type": (
-                        existing_node.suggested_type or node.suggested_type
-                    ),
-                    "aliases": _merge_aliases(existing_node, node),
-                    "chunk_ids": _extend_unique(existing_node.chunk_ids, node.chunk_ids)
-                }
-            )
+            nodes_by_id[node.id] = merge_nodes(existing_node, node)
 
         for edge in graph.edges:
+            edge = add_edge_provenance(edge, graph.metadata)
             key = (edge.source, edge.target, edge.label)
             existing_edge = edges_by_key.get(key)
             if existing_edge is None:
+                if not edge.provenance or edge.id in used_edge_ids:
+                    edge_id, next_edge_index = _next_edge_id(
+                        used_edge_ids,
+                        next_edge_index,
+                    )
+                    edge = edge.model_copy(update={"id": edge_id})
+                else:
+                    used_edge_ids.add(edge.id)
                 edges_by_key[key] = edge
                 continue
 
-            edges_by_key[key] = existing_edge.model_copy(
-                update={
-                    "chunk_ids": _extend_unique(existing_edge.chunk_ids, edge.chunk_ids)
-                }
-            )
+            edges_by_key[key] = merge_edges(existing_edge, edge)
 
-    edges = [
-        edge.model_copy(update={"id": f"edge-{index:04d}"})
-        for index, edge in enumerate(edges_by_key.values(), start=1)
-    ]
-    return KnowledgeGraph(nodes=list(nodes_by_id.values()), edges=edges)
+    return KnowledgeGraph(
+        nodes=list(nodes_by_id.values()),
+        edges=list(edges_by_key.values()),
+    )
 
 
-def _extend_unique(values: list[str], additions: list[str]) -> list[str]:
-    merged = list(values)
-    for addition in additions:
-        if addition not in merged:
-            merged.append(addition)
-    return merged
-
-
-def _merge_aliases(existing: Node, incoming: Node) -> list[str]:
-    additions = []
-    if incoming.label != existing.label:
-        additions.append(incoming.label)
-    additions.extend(incoming.aliases)
-    return _extend_unique(existing.aliases, additions)
-
-
-def _merge_node_type(existing: Node, incoming: Node) -> str:
-    existing_type = normalize_type_name(existing.type)
-    incoming_type = normalize_type_name(incoming.type)
-    if (
-        existing_type == UNCLASSIFIED_NODE_TYPE
-        and incoming_type != UNCLASSIFIED_NODE_TYPE
-    ):
-        return incoming.type
-    return existing.type
+def _next_edge_id(used_ids: set[str], start_index: int) -> tuple[str, int]:
+    index = start_index
+    while True:
+        edge_id = f"edge-{index:04d}"
+        index += 1
+        if edge_id not in used_ids:
+            used_ids.add(edge_id)
+            return edge_id, index

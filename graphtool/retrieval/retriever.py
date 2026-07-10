@@ -14,17 +14,12 @@ from graphtool.retrieval.embedding_store import (
 )
 from graphtool.retrieval.types import (
     ChunkHit,
-    NodeHit,
-    RelationshipHit,
+    ChunkRelationship,
     RetrievalResult,
 )
 
-BOTH_ENDPOINTS_SELECTED_BONUS = 0.25
 BM25_CHUNK_WEIGHT = 1.0
 SEMANTIC_CHUNK_WEIGHT = 1.0
-NODE_CHUNK_SUPPORT_WEIGHT = 0.5
-EDGE_CHUNK_SUPPORT_WEIGHT = 0.5
-OVERLAP_CHUNK_BONUS = 0.25
 
 
 def retrieve_context(
@@ -32,148 +27,40 @@ def retrieve_context(
     graph: KnowledgeGraph,
     chunks: Sequence[Chunk],
     *,
-    top_nodes: int = 5,
-    top_edges: int = 5,
     top_chunks: int = 5,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
 ) -> RetrievalResult:
     chunks_by_id = {chunk.id: chunk for chunk in chunks}
     nodes_by_id = {node.id: node for node in graph.nodes}
-
-    node_hits = _retrieve_nodes(query, graph.nodes, chunks_by_id, top_nodes)
-    relationship_hits = _retrieve_relationships(
-        query,
-        graph.edges,
-        nodes_by_id,
-        node_hits,
-        top_edges,
-    )
-    chunk_hits = _retrieve_chunks(
+    ranked_chunks = _rank_chunks(
         query,
         graph,
         chunks_by_id,
         nodes_by_id,
-        node_hits,
-        relationship_hits,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
-    )
-    chunk_hits = chunk_hits[:top_chunks]
+    )[:top_chunks]
+    chunk_hits = _attach_graph_annotations(ranked_chunks, graph, nodes_by_id)
     sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
 
     return RetrievalResult(
         query=query,
         sources=sources,
-        node_hits=node_hits,
-        relationship_hits=relationship_hits,
         chunks=chunk_hits,
-        context_text=_format_context(query, node_hits, relationship_hits, chunk_hits),
+        context_text=_format_context(query, chunk_hits),
     )
 
 
-def _retrieve_nodes(
-    query: str,
-    nodes: Sequence[Node],
-    chunks_by_id: dict[str, Chunk],
-    top_nodes: int,
-) -> list[NodeHit]:
-    documents = [
-        BM25Document(id=node.id, text=_node_text(node, chunks_by_id))
-        for node in nodes
-    ]
-    index = BM25Index(documents)
-    nodes_by_id = {node.id: node for node in nodes}
-
-    return [
-        NodeHit(
-            node=nodes_by_id[document.id],
-            score=score,
-            matched_text=nodes_by_id[document.id].label,
-        )
-        for document, score in index.rank(query)
-        if score > 0
-    ][:top_nodes]
-
-
-def _retrieve_relationships(
-    query: str,
-    edges: Sequence[Edge],
-    nodes_by_id: dict[str, Node],
-    node_hits: Sequence[NodeHit],
-    top_edges: int,
-) -> list[RelationshipHit]:
-    selected_node_scores = {hit.node.id: hit.score for hit in node_hits}
-    candidate_edges = [
-        edge
-        for edge in edges
-        if edge.source in selected_node_scores or edge.target in selected_node_scores
-    ]
-    documents = [
-        BM25Document(id=edge.id, text=_edge_text(edge, nodes_by_id))
-        for edge in candidate_edges
-    ]
-    index = BM25Index(documents)
-    edges_by_id = {edge.id: edge for edge in candidate_edges}
-
-    scored: list[tuple[Edge, float]] = []
-    for document, bm25_score in index.rank(query):
-        edge = edges_by_id[document.id]
-        source_node_score = selected_node_scores.get(edge.source, 0.0)
-        target_node_score = selected_node_scores.get(edge.target, 0.0)
-        both_endpoints_selected = (
-            edge.source in selected_node_scores and edge.target in selected_node_scores
-        )
-        endpoint_bonus = (
-            BOTH_ENDPOINTS_SELECTED_BONUS
-            if both_endpoints_selected
-            else 0.0
-        )
-        score = bm25_score + max(source_node_score, target_node_score) + endpoint_bonus
-        if score > 0:
-            scored.append((edge, score))
-
-    scored.sort(key=lambda item: (-item[1], item[0].id))
-    return [
-        RelationshipHit(
-            edge=edge,
-            source_node=nodes_by_id[edge.source],
-            target_node=nodes_by_id[edge.target],
-            score=score,
-            chunk_ids=list(edge.chunk_ids),
-        )
-        for edge, score in scored[:top_edges]
-    ]
-
-
-def _retrieve_chunks(
+def _rank_chunks(
     query: str,
     graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
     nodes_by_id: dict[str, Node],
-    node_hits: Sequence[NodeHit],
-    relationship_hits: Sequence[RelationshipHit],
     *,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
-) -> list[ChunkHit]:
-    linked_node_scores_by_chunk: dict[str, list[tuple[str, float]]] = {}
-    linked_edge_scores_by_chunk: dict[str, list[tuple[str, float]]] = {}
-
-    for hit in node_hits:
-        for chunk_id in hit.node.chunk_ids:
-            if chunk_id in chunks_by_id:
-                linked_node_scores_by_chunk.setdefault(chunk_id, []).append(
-                    (hit.node.id, hit.score)
-                )
-
-    for hit in relationship_hits:
-        for chunk_id in hit.chunk_ids:
-            if chunk_id in chunks_by_id:
-                linked_edge_scores_by_chunk.setdefault(chunk_id, []).append(
-                    (hit.edge.id, hit.score)
-                )
-
+) -> list[tuple[Chunk, float]]:
     searchable_text_by_chunk = _searchable_text_by_chunk(
         graph,
         chunks_by_id,
@@ -199,33 +86,56 @@ def _retrieve_chunks(
         )
     )
 
-    chunk_hits: list[ChunkHit] = []
+    ranked = []
     for chunk in chunks_by_id.values():
-        node_scores = linked_node_scores_by_chunk.get(chunk.id, [])
-        edge_scores = linked_edge_scores_by_chunk.get(chunk.id, [])
-        best_node_score = max((score for _, score in node_scores), default=0.0)
-        best_edge_score = max((score for _, score in edge_scores), default=0.0)
-        overlap_bonus = OVERLAP_CHUNK_BONUS if node_scores and edge_scores else 0.0
         score = (
             bm25_scores.get(chunk.id, 0.0) * BM25_CHUNK_WEIGHT
             + semantic_scores.get(chunk.id, 0.0) * SEMANTIC_CHUNK_WEIGHT
-            + best_node_score * NODE_CHUNK_SUPPORT_WEIGHT
-            + best_edge_score * EDGE_CHUNK_SUPPORT_WEIGHT
-            + overlap_bonus
         )
-        if score <= 0:
-            continue
-        chunk_hits.append(
-            ChunkHit(
-                chunk=chunk,
-                score=score,
-                linked_node_ids=_unique_ordered(node_id for node_id, _ in node_scores),
-                linked_edge_ids=_unique_ordered(edge_id for edge_id, _ in edge_scores),
-            )
-        )
+        if score > 0:
+            ranked.append((chunk, score))
 
-    chunk_hits.sort(key=lambda hit: (-hit.score, hit.chunk.index, hit.chunk.id))
-    return chunk_hits
+    ranked.sort(key=lambda item: (-item[1], item[0].index, item[0].id))
+    return ranked
+
+
+def _attach_graph_annotations(
+    ranked_chunks: Sequence[tuple[Chunk, float]],
+    graph: KnowledgeGraph,
+    nodes_by_id: dict[str, Node],
+) -> list[ChunkHit]:
+    selected_chunk_ids = {chunk.id for chunk, _ in ranked_chunks}
+    nodes_by_chunk: dict[str, list[Node]] = {}
+    for node in sorted(graph.nodes, key=lambda item: item.id):
+        for chunk_id in node.chunk_ids:
+            if chunk_id in selected_chunk_ids:
+                nodes_by_chunk.setdefault(chunk_id, []).append(node)
+
+    relationships_by_chunk: dict[str, list[ChunkRelationship]] = {}
+    for edge in sorted(graph.edges, key=lambda item: item.id):
+        source_node = nodes_by_id.get(edge.source)
+        target_node = nodes_by_id.get(edge.target)
+        if source_node is None or target_node is None:
+            continue
+
+        relationship = ChunkRelationship(
+            edge=edge,
+            source_node=source_node,
+            target_node=target_node,
+        )
+        for chunk_id in edge.chunk_ids:
+            if chunk_id in selected_chunk_ids:
+                relationships_by_chunk.setdefault(chunk_id, []).append(relationship)
+
+    return [
+        ChunkHit(
+            chunk=chunk,
+            score=score,
+            linked_nodes=nodes_by_chunk.get(chunk.id, []),
+            linked_relationships=relationships_by_chunk.get(chunk.id, []),
+        )
+        for chunk, score in ranked_chunks
+    ]
 
 
 def _searchable_text_by_chunk(
@@ -234,13 +144,13 @@ def _searchable_text_by_chunk(
     nodes_by_id: dict[str, Node],
 ) -> dict[str, str]:
     nodes_by_chunk: dict[str, list[Node]] = {}
-    for node in graph.nodes:
+    for node in sorted(graph.nodes, key=lambda item: item.id):
         for chunk_id in node.chunk_ids:
             if chunk_id in chunks_by_id:
                 nodes_by_chunk.setdefault(chunk_id, []).append(node)
 
     edges_by_chunk: dict[str, list[Edge]] = {}
-    for edge in graph.edges:
+    for edge in sorted(graph.edges, key=lambda item: item.id):
         if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
             continue
         for chunk_id in edge.chunk_ids:
@@ -323,39 +233,6 @@ def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:
     }
 
 
-def _node_text(node: Node, chunks_by_id: dict[str, Chunk]) -> str:
-    headings = [
-        " ".join(chunks_by_id[chunk_id].heading_path)
-        for chunk_id in node.chunk_ids
-        if chunk_id in chunks_by_id
-    ]
-    return " ".join(
-        [
-            node.id,
-            node.label,
-            node.type,
-            node.suggested_type or "",
-            _properties_text(node.properties),
-            *headings,
-        ]
-    )
-
-
-def _edge_text(edge: Edge, nodes_by_id: dict[str, Node]) -> str:
-    source = nodes_by_id[edge.source]
-    target = nodes_by_id[edge.target]
-    return " ".join(
-        [
-            source.label,
-            source.type,
-            edge.label,
-            _properties_text(edge.properties),
-            target.label,
-            target.type,
-        ]
-    )
-
-
 def _chunk_text(
     chunk: Chunk,
     nodes: Sequence[Node],
@@ -370,30 +247,41 @@ def _chunk_text(
 
     if nodes:
         lines.append("Entities:")
-        lines.extend(
-            f"{node.label} [{node.type}]"
-            for node in nodes
-        )
+        lines.extend(_node_text(node) for node in nodes)
 
     if edges:
         lines.append("Relationships:")
         lines.extend(
-            _relationship_text(edge, nodes_by_id)
+            _relationship_text(
+                edge,
+                nodes_by_id[edge.source],
+                nodes_by_id[edge.target],
+            )
             for edge in edges
         )
 
     return "\n".join(lines)
 
 
-def _relationship_text(edge: Edge, nodes_by_id: dict[str, Node]) -> str:
-    source = nodes_by_id[edge.source]
-    target = nodes_by_id[edge.target]
-    return f"{source.label} --{edge.label}--> {target.label}"
+def _node_text(node: Node) -> str:
+    parts = [f"{node.label} [{node.type}]"]
+    if node.aliases:
+        parts.append(f"aliases: {', '.join(node.aliases)}")
+    if node.suggested_type:
+        parts.append(f"suggested type: {node.suggested_type}")
+    if node.properties:
+        parts.append(f"properties: {_properties_text(node.properties)}")
+    return " | ".join(parts)
+
+
+def _relationship_text(edge: Edge, source: Node, target: Node) -> str:
+    text = f"{source.label} --{edge.label}--> {target.label}"
+    if edge.properties:
+        return f"{text} | properties: {_properties_text(edge.properties)}"
+    return text
 
 
 def _properties_text(properties: dict[str, Any]) -> str:
-    if not properties:
-        return ""
     return json.dumps(properties, sort_keys=True)
 
 
@@ -406,47 +294,43 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     if left_norm == 0.0 or right_norm == 0.0:
         return 0.0
 
-    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+    return sum(
+        a * b
+        for a, b in zip(left, right, strict=True)
+    ) / (left_norm * right_norm)
 
 
-def _format_context(
-    query: str,
-    node_hits: Sequence[NodeHit],
-    relationship_hits: Sequence[RelationshipHit],
-    chunk_hits: Sequence[ChunkHit],
-) -> str:
-    lines = [f"Query: {query}", "", "Relevant nodes:"]
-    if node_hits:
-        lines.extend(
-            f"- {hit.node.label} [{hit.node.type}] ({hit.node.id})"
-            for hit in node_hits
-        )
-    else:
+def _format_context(query: str, chunk_hits: Sequence[ChunkHit]) -> str:
+    lines = [f"Query: {query}", "", "Evidence:"]
+    if not chunk_hits:
         lines.append("- None")
+        return "\n".join(lines)
 
-    lines.extend(["", "Relevant relationships:"])
-    if relationship_hits:
-        lines.extend(
-            "- "
-            f"{hit.source_node.label} --{hit.edge.label}--> {hit.target_node.label} "
-            f"({hit.edge.id})"
-            for hit in relationship_hits
-        )
-    else:
-        lines.append("- None")
+    for hit in chunk_hits:
+        heading = " > ".join(hit.chunk.heading_path)
+        metadata = f"{hit.chunk.id} | {hit.chunk.source}"
+        if heading:
+            metadata = f"{metadata} | {heading}"
+        lines.extend([f"[{metadata}]", hit.chunk.text])
 
-    lines.extend(["", "Evidence:"])
-    if chunk_hits:
-        for hit in chunk_hits:
-            heading = " > ".join(hit.chunk.heading_path)
-            metadata = f"{hit.chunk.id} | {hit.chunk.source}"
-            if heading:
-                metadata = f"{metadata} | {heading}"
-            lines.extend([f"[{metadata}]", hit.chunk.text])
-    else:
-        lines.append("- None")
+        if hit.linked_nodes:
+            lines.append("Linked entities:")
+            lines.extend(f"- {_node_text(node)}" for node in hit.linked_nodes)
 
-    return "\n".join(lines)
+        if hit.linked_relationships:
+            lines.append("Linked relationships:")
+            lines.extend(
+                "- " + _relationship_text(
+                    relationship.edge,
+                    relationship.source_node,
+                    relationship.target_node,
+                )
+                for relationship in hit.linked_relationships
+            )
+
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def _unique_ordered(values: Iterable[str]) -> list[str]:

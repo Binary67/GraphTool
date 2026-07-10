@@ -86,4 +86,6 @@ def test_node_aliases_and_chunk_ids_default_empty():
 
     assert node.aliases == []
     assert node.chunk_ids == []
+    assert node.provenance == []
     assert edge.chunk_ids == []
+    assert edge.provenance == []

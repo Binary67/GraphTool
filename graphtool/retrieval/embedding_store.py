@@ -21,6 +21,9 @@ class ChunkEmbeddingStore(Protocol):
     def save(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
         ...
 
+    def delete(self, chunk_ids: list[str]) -> None:
+        ...
+
 
 class JsonChunkEmbeddingStore:
     """Filesystem-backed embedding cache for retrieval chunks."""
@@ -53,6 +56,17 @@ class JsonChunkEmbeddingStore:
 
     def exists(self) -> bool:
         return self._path.exists()
+
+    def delete(self, chunk_ids: list[str]) -> None:
+        if not self._path.exists():
+            return
+        deleted = set(chunk_ids)
+        records = {
+            chunk_id: record
+            for chunk_id, record in self.load().items()
+            if chunk_id not in deleted
+        }
+        self.save(records)
 
 
 def chunk_embedding_input_hash(text: str) -> str:

@@ -1,8 +1,7 @@
 from graphtool.agents.answer_questions import answer_question
 from graphtool.corpus import (
-    filter_unprocessed_sources,
-    ingest_unprocessed_documents,
     load_markdown_documents,
+    synchronize_documents,
 )
 from graphtool.llm import load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
@@ -26,36 +25,30 @@ def main() -> None:
         )
         logger.info("Loaded %s markdown documents", len(documents))
 
-        unprocessed_sources = filter_unprocessed_sources(
+        sync_result = synchronize_documents(
             documents,
             runtime.graph_store,
+            runtime.chunk_store,
+            runtime.fast_llm,
+            knowledge_base_store=runtime.knowledge_base_store,
+            graph_embedding_store=runtime.graph_embedding_store,
+            knowledge_base_embedding_store=(
+                runtime.knowledge_base_embedding_store
+            ),
+            chunk_embedding_store=runtime.chunk_embedding_store,
+            dropped_edges_path=runtime.paths.dropped_edges_path,
+            taxonomy_suggestion_store=runtime.taxonomy_suggestion_store,
+            min_candidate_similarity=(
+                config.entity_resolution_min_candidate_similarity
+            ),
         )
-        logger.info("Found %s unprocessed documents", len(unprocessed_sources))
-
-        if unprocessed_sources:
-            logger.info("Ingesting %s documents", len(unprocessed_sources))
-            ingest_unprocessed_documents(
-                {
-                    source: documents[source]
-                    for source in unprocessed_sources
-                },
-                runtime.graph_store,
-                runtime.chunk_store,
-                runtime.fast_llm,
-                knowledge_base_store=runtime.knowledge_base_store,
-                graph_embedding_store=runtime.graph_embedding_store,
-                knowledge_base_embedding_store=(
-                    runtime.knowledge_base_embedding_store
-                ),
-                dropped_edges_path=runtime.paths.dropped_edges_path,
-                taxonomy_suggestion_store=runtime.taxonomy_suggestion_store,
-                min_candidate_similarity=(
-                    config.entity_resolution_min_candidate_similarity
-                ),
-            )
-            logger.info("Finished ingesting documents")
-        else:
-            logger.info("No documents require ingestion")
+        logger.info(
+            "Synchronized documents added=%s changed=%s deleted=%s unchanged=%s",
+            len(sync_result.added_sources),
+            len(sync_result.changed_sources),
+            len(sync_result.deleted_sources),
+            len(sync_result.unchanged_sources),
+        )
 
         logger.info("Exporting visualizations")
         visualization_paths = export_knowledge_base_visualizations(

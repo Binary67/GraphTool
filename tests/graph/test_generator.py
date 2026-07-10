@@ -82,7 +82,7 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
         _chunk("doc-chunk-0001", 1, "## Pydantic\nValidation.", ["Python", "Pydantic"]),
     ]
 
-    generate_knowledge_graph(chunks, "doc.md", fake)
+    generate_knowledge_graph(chunks, "doc.md", fake, content_hash="hash")
 
     assert len(fake.calls) == 2
     messages, response_model = fake.calls[0]
@@ -101,7 +101,7 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
 def test_generate_knowledge_graph_prompt_keeps_metadata_out_of_graph_content():
     fake = FakeLLM([_extracted_graph()])
 
-    generate_knowledge_graph([_chunk()], "doc.md", fake)
+    generate_knowledge_graph([_chunk()], "doc.md", fake, content_hash="hash")
 
     messages, _ = fake.calls[0]
     system_prompt = messages[0].content
@@ -122,10 +122,13 @@ def test_generate_knowledge_graph_prompt_keeps_metadata_out_of_graph_content():
 def test_generate_knowledge_graph_attaches_metadata():
     fake = FakeLLM([_extracted_graph()])
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert graph.metadata is not None
     assert graph.metadata.source == "doc.md"
+    assert graph.metadata.content_hash == "hash"
     assert graph.metadata.created_at <= datetime.now(timezone.utc)
 
 
@@ -146,7 +149,9 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert graph.nodes[0].id == _scoped_id(1)
     assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
@@ -204,7 +209,9 @@ def test_generate_knowledge_graph_filters_structural_nodes_and_edges():
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert {node.id for node in graph.nodes} == {
         _scoped_id(1),
@@ -232,7 +239,9 @@ def test_generate_knowledge_graph_keeps_meaningful_document_type():
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert [node.id for node in graph.nodes] == [_scoped_id(1)]
     assert graph.nodes[0].type == "document"
@@ -274,7 +283,9 @@ def test_generate_knowledge_graph_retries_invalid_structured_response_once():
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert len(fake.calls) == 2
     assert [node.id for node in graph.nodes] == [_scoped_id(1)]
@@ -307,7 +318,9 @@ def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk(
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert [(edge.id, edge.source, edge.target, edge.label) for edge in graph.edges] == [
         (
@@ -351,7 +364,9 @@ def test_generate_knowledge_graph_deduplicates_semantic_edges_within_chunk():
         ]
     )
 
-    graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
+    graph = generate_knowledge_graph(
+        [_chunk()], "doc.md", fake, content_hash="hash"
+    )
 
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
@@ -392,6 +407,7 @@ def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp
         [_chunk()],
         "doc.md",
         fake,
+        content_hash="hash",
         dropped_edges_path=dropped_edges_path,
     )
 
@@ -436,7 +452,9 @@ def test_generate_knowledge_graph_logs_dropped_edges_to_run_log(tmp_path):
             ]
         )
 
-        generate_knowledge_graph([_chunk()], "doc.md", fake)
+        generate_knowledge_graph(
+            [_chunk()], "doc.md", fake, content_hash="hash"
+        )
         _flush_logger(logger)
 
         log_files = list((tmp_path / "logs").glob("graphtool-*.log"))
@@ -483,7 +501,9 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
             ]
         )
 
-        generate_knowledge_graph([_chunk()], "doc.md", fake)
+        generate_knowledge_graph(
+            [_chunk()], "doc.md", fake, content_hash="hash"
+        )
         _flush_logger(logger)
 
         log_files = list((tmp_path / "logs").glob("graphtool-*.log"))
@@ -541,7 +561,7 @@ def test_generate_knowledge_graph_scopes_reused_node_refs_across_chunks():
         _chunk("doc-chunk-0001", 1, "## Pydantic\nValidation.", ["Python", "Pydantic"]),
     ]
 
-    graph = generate_knowledge_graph(chunks, "doc.md", fake)
+    graph = generate_knowledge_graph(chunks, "doc.md", fake, content_hash="hash")
 
     assert {node.id: node.label for node in graph.nodes} == {
         _scoped_id(1, "doc-chunk-0000"): "OpenAI",
@@ -617,6 +637,7 @@ def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
         [_chunk()],
         "doc.md",
         fake,
+        content_hash="hash",
         taxonomy_suggestion_store=suggestion_store,
     )
 
@@ -667,6 +688,7 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
         chunks,
         "doc.md",
         fake,
+        content_hash="hash",
         taxonomy_suggestion_store=suggestion_store,
     )
 

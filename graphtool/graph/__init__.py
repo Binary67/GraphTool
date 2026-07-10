@@ -8,6 +8,7 @@ from graphtool.graph.embedding_store import (
 )
 from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.provenance import filter_knowledge_graph_by_source
 from graphtool.graph.resolver import SemanticEntityResolver
 from graphtool.graph.taxonomy import (
     CANONICAL_NODE_TYPES,
@@ -28,11 +29,19 @@ from graphtool.graph.taxonomy import (
     normalize_type_name,
     promote_suggestions,
 )
-from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
+from graphtool.graph.types import (
+    Edge,
+    EdgeProvenance,
+    GraphMetadata,
+    KnowledgeGraph,
+    Node,
+    NodeProvenance,
+)
 
 __all__ = [
     "CANONICAL_NODE_TYPES",
     "Edge",
+    "EdgeProvenance",
     "GraphMetadata",
     "JsonEmbeddingStore",
     "JsonGraphEmbeddingStore",
@@ -46,6 +55,7 @@ __all__ = [
     "NodeEmbeddingRecord",
     "NodeTypeRegistry",
     "Node",
+    "NodeProvenance",
     "SemanticEntityResolver",
     "TaxonomyEvolutionResult",
     "TaxonomyPromotionRecord",
@@ -57,6 +67,7 @@ __all__ = [
     "combine_knowledge_graphs",
     "default_node_type_registry",
     "evolve_taxonomy",
+    "filter_knowledge_graph_by_source",
     "generate_knowledge_graph",
     "migrate_promoted_types",
     "normalize_type_name",

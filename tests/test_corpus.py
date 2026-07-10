@@ -6,11 +6,10 @@ import pytest
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.types import Chunk
 from graphtool.corpus import (
-    filter_unprocessed_sources,
-    ingest_unprocessed_documents,
     load_markdown_documents,
     rebuild_knowledge_base,
     search_knowledge_base,
+    synchronize_documents,
 )
 from graphtool.graph.generator import (
     _ExtractedEdge,
@@ -20,10 +19,14 @@ from graphtool.graph.generator import (
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision
+from graphtool.graph.taxonomy import (
+    JsonTaxonomySuggestionStore,
+    TaxonomySuggestionRecord,
+)
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
-from graphtool.retrieval import JsonChunkEmbeddingStore
-from graphtool.source import source_key
+from graphtool.retrieval import ChunkEmbeddingRecord, JsonChunkEmbeddingStore
+from graphtool.source import document_content_hash, source_key
 
 T = TypeVar("T")
 
@@ -39,6 +42,11 @@ class FakeLLM:
     def generate_structured(self, messages, response_model: type[T]) -> T:
         self.calls.append((list(messages), response_model))
         return self.responses[len(self.calls) - 1]
+
+
+class FailingLLM:
+    def generate_structured(self, messages, response_model):
+        raise RuntimeError("extraction failed")
 
 
 class FakeSemanticLLM:
@@ -137,12 +145,17 @@ def _graph(source: str, chunk: Chunk, node_id: str, label: str) -> KnowledgeGrap
         edges=[],
         metadata=GraphMetadata(
             source=source,
+            content_hash=document_content_hash(chunk.text),
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
 
 
-def _relationship_graph(source: str, chunk_id: str) -> KnowledgeGraph:
+def _relationship_graph(
+    source: str,
+    chunk_id: str,
+    content: str = "# Existing\nGraphTool uses Azure OpenAI.",
+) -> KnowledgeGraph:
     return KnowledgeGraph(
         nodes=[
             Node(
@@ -169,6 +182,7 @@ def _relationship_graph(source: str, chunk_id: str) -> KnowledgeGraph:
         ],
         metadata=GraphMetadata(
             source=source,
+            content_hash=document_content_hash(content),
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
@@ -226,20 +240,31 @@ def test_search_knowledge_base_searches_all_saved_documents(tmp_path):
     assert set(result.sources) == {"docs/pydantic.md", "docs/fastapi.md"}
 
 
-def test_filter_unprocessed_sources_skips_saved_graphs(tmp_path):
-    graph_store = JsonGraphStore(tmp_path)
+def test_synchronize_documents_skips_unchanged_sources(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
     chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
     graph_store.save(_graph("docs/processed.md", chunk, "processed", "Processed"))
+    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    fake = FakeLLM([])
 
-    unprocessed = filter_unprocessed_sources(
-        ["docs/processed.md", "docs/pending.md"],
+    result = synchronize_documents(
+        {"docs/processed.md": "# Processed\nText."},
         graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
     )
 
-    assert unprocessed == ["docs/pending.md"]
+    assert result.unchanged_sources == ["docs/processed.md"]
+    assert result.added_sources == []
+    assert result.changed_sources == []
+    assert result.deleted_sources == []
+    assert fake.calls == []
 
 
-def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
+def test_synchronize_documents_adds_only_pending_source(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
     processed_chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
@@ -254,7 +279,7 @@ def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
         ]
     )
 
-    graphs = ingest_unprocessed_documents(
+    result = synchronize_documents(
         {
             "docs/processed.md": "# Processed\nText.",
             "docs/pending.md": "# Pending\nNeeds validation.",
@@ -262,17 +287,19 @@ def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
         graph_store,
         chunk_store,
         fake,
+        knowledge_base_store=JsonKnowledgeBaseStore(
+            tmp_path / "knowledge_base.json"
+        ),
     )
 
-    assert len(graphs) == 1
-    assert graphs[0].metadata is not None
-    assert graphs[0].metadata.source == "docs/pending.md"
+    assert result.added_sources == ["docs/pending.md"]
+    assert result.unchanged_sources == ["docs/processed.md"]
     assert len(fake.calls) == 1
     assert graph_store.exists("docs/pending.md") is True
     assert chunk_store.load("docs/pending.md")
 
 
-def test_ingest_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
+def test_synchronize_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
     tmp_path,
 ):
     graph_store = JsonGraphStore(tmp_path / "graphs")
@@ -306,8 +333,11 @@ def test_ingest_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
     new_source = "docs/new.md"
     new_chunk_id = f"{source_key(new_source)}-chunk-0000"
 
-    ingest_unprocessed_documents(
-        {new_source: "# GraphTool\nUses Azure OpenAI."},
+    synchronize_documents(
+        {
+            "docs/existing.md": "# Existing\nGraphTool uses Azure OpenAI.",
+            new_source: "# GraphTool\nUses Azure OpenAI.",
+        },
         graph_store,
         chunk_store,
         fake,
@@ -331,7 +361,7 @@ def test_ingest_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
     }
 
 
-def test_ingest_scopes_reused_node_refs_across_documents(tmp_path):
+def test_synchronize_scopes_reused_node_refs_across_documents(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
     knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
@@ -339,14 +369,18 @@ def test_ingest_scopes_reused_node_refs_across_documents(tmp_path):
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(ref="node-1", label="OpenAI", type="organization")
+                    _ExtractedNode(
+                        ref="node-1",
+                        label="Anthropic",
+                        type="organization",
+                    )
                 ]
             ),
             _extracted_graph(
                 nodes=[
                     _ExtractedNode(
                         ref="node-1",
-                        label="Anthropic",
+                        label="OpenAI",
                         type="organization",
                     )
                 ]
@@ -358,7 +392,7 @@ def test_ingest_scopes_reused_node_refs_across_documents(tmp_path):
     first_chunk_id = f"{source_key(first_source)}-chunk-0000"
     second_chunk_id = f"{source_key(second_source)}-chunk-0000"
 
-    ingest_unprocessed_documents(
+    synchronize_documents(
         {
             first_source: "# OpenAI\nAI company.",
             second_source: "# Anthropic\nAI company.",
@@ -376,7 +410,7 @@ def test_ingest_scopes_reused_node_refs_across_documents(tmp_path):
     }
 
 
-def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically(
+def test_synchronize_documents_updates_cached_knowledge_base_semantically(
     tmp_path,
 ):
     graph_store = JsonGraphStore(tmp_path / "graphs")
@@ -413,11 +447,12 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
         ],
         metadata=GraphMetadata(
             source="docs/existing.md",
+            content_hash=document_content_hash("# Existing\nOpenAI develops ChatGPT."),
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
     graph_store.save(existing_graph)
-    knowledge_base_store.save(existing_graph)
+    rebuild_knowledge_base(graph_store, knowledge_base_store)
     fake = FakeSemanticLLM(
         responses=[
             _extracted_graph(
@@ -448,6 +483,7 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
                 decision="merge",
                 target_node_id="openai",
                 confidence=0.95,
+                aliases_to_add=["OpenAI Inc."],
             )
         ],
         vectors={
@@ -459,8 +495,11 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
     new_source = "docs/new.md"
     new_chunk_id = f"{source_key(new_source)}-chunk-0000"
 
-    ingest_unprocessed_documents(
-        {new_source: "# OpenAI organization\nDevelops ChatGPT."},
+    synchronize_documents(
+        {
+            "docs/existing.md": "# Existing\nOpenAI develops ChatGPT.",
+            new_source: "# OpenAI organization\nDevelops ChatGPT.",
+        },
         graph_store,
         chunk_store,
         fake,
@@ -472,8 +511,9 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
     graph = knowledge_base_store.load()
     assert {node.id for node in graph.nodes} == {"openai", "chatgpt"}
     openai = next(node for node in graph.nodes if node.id == "openai")
-    assert openai.aliases == ["OpenAI organization"]
+    assert openai.aliases == ["OpenAI organization", "OpenAI Inc."]
     assert openai.chunk_ids == [existing_chunk_id, new_chunk_id]
+    assert openai.provenance[1].resolution_aliases == ["OpenAI Inc."]
     assert len(graph.edges) == 1
     assert graph.edges[0].source == "openai"
     assert graph.edges[0].target == "chatgpt"
@@ -482,7 +522,7 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
     assert knowledge_base_embedding_store.exists() is True
 
 
-def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolvers(
+def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
     tmp_path,
 ):
     graph_store = JsonGraphStore(tmp_path / "graphs")
@@ -504,11 +544,12 @@ def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolver
         edges=[],
         metadata=GraphMetadata(
             source="docs/existing.md",
+            content_hash=document_content_hash("# Existing\nOpenAI."),
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
     graph_store.save(existing_graph)
-    knowledge_base_store.save(existing_graph)
+    rebuild_knowledge_base(graph_store, knowledge_base_store)
     fake = FakeSemanticLLM(
         responses=[
             _extracted_graph(
@@ -539,8 +580,9 @@ def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolver
     )
     new_source = "docs/new.md"
 
-    ingest_unprocessed_documents(
+    synchronize_documents(
         {
+            "docs/existing.md": "# Existing\nOpenAI.",
             new_source: (
                 "# OpenAI organization\nFirst mention.\n\n"
                 "# OpenAI company\nSecond mention."
@@ -576,7 +618,7 @@ def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolver
     ] == []
 
 
-def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
+def test_synchronize_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
     knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
@@ -592,8 +634,11 @@ def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_
         ]
     )
 
-    ingest_unprocessed_documents(
-        {"docs/pending.md": "# Pending\nNeeds validation."},
+    synchronize_documents(
+        {
+            "docs/processed.md": "# Processed\nText.",
+            "docs/pending.md": "# Pending\nNeeds validation.",
+        },
         graph_store,
         chunk_store,
         fake,
@@ -606,6 +651,372 @@ def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_
         "processed",
         f"{pending_chunk_id}::node-0001",
     }
+
+
+def test_synchronize_changed_document_replaces_only_its_contributions_and_caches(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    graph_embedding_store = JsonGraphEmbeddingStore(tmp_path / "graph_embeddings")
+    knowledge_base_embedding_store = JsonEmbeddingStore(
+        tmp_path / "knowledge_base_embeddings.json"
+    )
+    chunk_embedding_store = JsonChunkEmbeddingStore(
+        tmp_path / "chunk_embeddings.json"
+    )
+    taxonomy_store = JsonTaxonomySuggestionStore(
+        tmp_path / "taxonomy_suggestions.json"
+    )
+    source_a = "docs/a.md"
+    source_b = "docs/b.md"
+    original_a = "# A\nShared has Old A."
+    content_b = "# B\nShared has B."
+    initial = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="shared", label="Shared", type="concept"),
+                    _ExtractedNode(ref="old-a", label="Old A", type="feature"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="a-edge",
+                        source_ref="shared",
+                        target_ref="old-a",
+                        label="has",
+                    )
+                ],
+            ),
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="shared", label="Shared", type="concept"),
+                    _ExtractedNode(ref="b", label="B", type="tool"),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="b-edge",
+                        source_ref="shared",
+                        target_ref="b",
+                        label="has",
+                    )
+                ],
+            ),
+        ],
+        decisions=[],
+        vectors={},
+    )
+    synchronize_documents(
+        {source_a: original_a, source_b: content_b},
+        graph_store,
+        chunk_store,
+        initial,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+        chunk_embedding_store=chunk_embedding_store,
+        taxonomy_suggestion_store=taxonomy_store,
+    )
+    old_a_chunk_id = f"{source_key(source_a)}-chunk-0000"
+    b_chunk_id = f"{source_key(source_b)}-chunk-0000"
+    chunk_embedding_store.save(
+        {
+            old_a_chunk_id: ChunkEmbeddingRecord(
+                chunk_id=old_a_chunk_id,
+                embedding_model="model",
+                embedding_input_hash="old-a",
+                vector=[1.0],
+            ),
+            b_chunk_id: ChunkEmbeddingRecord(
+                chunk_id=b_chunk_id,
+                embedding_model="model",
+                embedding_input_hash="b",
+                vector=[1.0],
+            ),
+        }
+    )
+    timestamp = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    taxonomy_store.save(
+        [
+            TaxonomySuggestionRecord(
+                suggested_type="old-a",
+                normalized_suggested_type="old a",
+                node_id="old-a",
+                node_label="Old A",
+                current_type="unclassified",
+                source=source_a,
+                chunk_id=old_a_chunk_id,
+                created_at=timestamp,
+            ),
+            TaxonomySuggestionRecord(
+                suggested_type="b",
+                normalized_suggested_type="b",
+                node_id="b",
+                node_label="B",
+                current_type="unclassified",
+                source=source_b,
+                chunk_id=b_chunk_id,
+                created_at=timestamp,
+            ),
+        ]
+    )
+    original_graph = knowledge_base_store.load()
+    shared_id = next(node.id for node in original_graph.nodes if node.label == "Shared")
+    replacement_a = "# A\nShared has New A."
+    changed = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="shared", label="Shared", type="concept"),
+                    _ExtractedNode(
+                        ref="new-a",
+                        label="New A",
+                        type="capability",
+                    ),
+                ],
+                edges=[
+                    _ExtractedEdge(
+                        id="new-a-edge",
+                        source_ref="shared",
+                        target_ref="new-a",
+                        label="has",
+                    )
+                ],
+            )
+        ],
+        decisions=[],
+        vectors={},
+    )
+
+    result = synchronize_documents(
+        {source_a: replacement_a, source_b: content_b},
+        graph_store,
+        chunk_store,
+        changed,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+        chunk_embedding_store=chunk_embedding_store,
+        taxonomy_suggestion_store=taxonomy_store,
+    )
+
+    graph = knowledge_base_store.load()
+    labels = {node.label for node in graph.nodes}
+    shared = next(node for node in graph.nodes if node.label == "Shared")
+    assert result.changed_sources == [source_a]
+    assert result.unchanged_sources == [source_b]
+    assert len(changed.responses) == 1
+    assert shared.id == shared_id
+    assert [item.source for item in shared.provenance] == [source_b, source_a]
+    assert "Old A" not in labels
+    assert {"Shared", "New A", "B"} <= labels
+    assert graph_store.load(source_a).metadata.content_hash == document_content_hash(
+        replacement_a
+    )
+    assert set(chunk_embedding_store.load()) == {b_chunk_id}
+    assert {record.source for record in taxonomy_store.load()} == {source_b}
+
+
+def test_changed_local_node_id_does_not_overwrite_surviving_shared_entity(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    source_a = "docs/a.md"
+    source_b = "docs/b.md"
+    content_b = "# B\nShared."
+    initial = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                [_ExtractedNode(ref="shared", label="Shared", type="concept")]
+            ),
+            _extracted_graph(
+                [_ExtractedNode(ref="shared", label="Shared", type="concept")]
+            ),
+        ],
+        decisions=[],
+        vectors={},
+    )
+    synchronize_documents(
+        {source_a: "# A\nShared.", source_b: content_b},
+        graph_store,
+        chunk_store,
+        initial,
+        knowledge_base_store=knowledge_base_store,
+    )
+    shared_id = knowledge_base_store.load().nodes[0].id
+    changed = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                [
+                    _ExtractedNode(
+                        ref="different",
+                        label="Different",
+                        type="capability",
+                    )
+                ]
+            )
+        ],
+        decisions=[],
+        vectors={},
+    )
+
+    synchronize_documents(
+        {source_a: "# A\nDifferent.", source_b: content_b},
+        graph_store,
+        chunk_store,
+        changed,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    graph = knowledge_base_store.load()
+    assert {node.label for node in graph.nodes} == {"Shared", "Different"}
+    assert next(node.id for node in graph.nodes if node.label == "Shared") == shared_id
+    assert len({node.id for node in graph.nodes}) == 2
+
+
+def test_synchronize_deleted_document_removes_artifacts_but_keeps_shared_nodes(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    graph_embedding_store = JsonGraphEmbeddingStore(tmp_path / "graph_embeddings")
+    knowledge_base_embedding_store = JsonEmbeddingStore(
+        tmp_path / "knowledge_base_embeddings.json"
+    )
+    source_a = "docs/a.md"
+    source_b = "docs/b.md"
+    initial = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="shared", label="Shared", type="concept"),
+                    _ExtractedNode(ref="a", label="A", type="feature"),
+                ]
+            ),
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="shared", label="Shared", type="concept"),
+                    _ExtractedNode(ref="b", label="B", type="tool"),
+                ]
+            ),
+        ],
+        decisions=[],
+        vectors={},
+    )
+    synchronize_documents(
+        {source_a: "# A\nShared and A.", source_b: "# B\nShared and B."},
+        graph_store,
+        chunk_store,
+        initial,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+    )
+    shared_id = next(
+        node.id
+        for node in knowledge_base_store.load().nodes
+        if node.label == "Shared"
+    )
+    deleting = FakeSemanticLLM(responses=[], decisions=[], vectors={})
+
+    result = synchronize_documents(
+        {source_b: "# B\nShared and B."},
+        graph_store,
+        chunk_store,
+        deleting,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+    )
+
+    graph = knowledge_base_store.load()
+    shared = next(node for node in graph.nodes if node.label == "Shared")
+    assert result.deleted_sources == [source_a]
+    assert graph_store.exists(source_a) is False
+    with pytest.raises(FileNotFoundError):
+        chunk_store.load(source_a)
+    assert graph_embedding_store.exists(source_a) is False
+    assert shared.id == shared_id
+    assert [item.source for item in shared.provenance] == [source_b]
+    assert {node.label for node in graph.nodes} == {"Shared", "B"}
+    assert set(knowledge_base_embedding_store.load()) == {
+        node.id for node in graph.nodes
+    }
+
+
+def test_synchronize_rename_is_delete_plus_add(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    old_source = "docs/old.md"
+    new_source = "docs/new.md"
+    content = "# Document\nContent."
+    synchronize_documents(
+        {old_source: content},
+        graph_store,
+        chunk_store,
+        FakeLLM(
+            [
+                _extracted_graph(
+                    [_ExtractedNode(ref="doc", label="Doc", type="document")]
+                )
+            ]
+        ),
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    result = synchronize_documents(
+        {new_source: content},
+        graph_store,
+        chunk_store,
+        FakeLLM(
+            [
+                _extracted_graph(
+                    [_ExtractedNode(ref="doc", label="Doc", type="document")]
+                )
+            ]
+        ),
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    assert result.added_sources == [new_source]
+    assert result.deleted_sources == [old_source]
+    assert graph_store.exists(old_source) is False
+    assert graph_store.exists(new_source) is True
+
+
+def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    source = "docs/a.md"
+    original = "# A\nOriginal."
+    synchronize_documents(
+        {source: original},
+        graph_store,
+        chunk_store,
+        FakeLLM(
+            [_extracted_graph([_ExtractedNode(ref="a", label="A", type="concept")])]
+        ),
+        knowledge_base_store=knowledge_base_store,
+    )
+    original_graph = graph_store.load(source)
+    original_knowledge_base = knowledge_base_store.load()
+
+    with pytest.raises(RuntimeError, match="extraction failed"):
+        synchronize_documents(
+            {source: "# A\nReplacement."},
+            graph_store,
+            chunk_store,
+            FailingLLM(),
+            knowledge_base_store=knowledge_base_store,
+        )
+
+    assert graph_store.load(source) == original_graph
+    assert knowledge_base_store.load() == original_knowledge_base
+    assert chunk_store.load(source)[0].text == original
 
 
 def test_search_knowledge_base_uses_cached_graph_when_available(tmp_path):
@@ -636,7 +1047,8 @@ def test_search_knowledge_base_uses_cached_graph_when_available(tmp_path):
         knowledge_base_store=knowledge_base_store,
     )
 
-    assert [hit.node.id for hit in result.node_hits] == ["cached"]
+    assert [hit.chunk.id for hit in result.chunks] == [chunk.id]
+    assert [node.id for node in result.chunks[0].linked_nodes] == ["cached"]
 
 
 def test_search_knowledge_base_uses_chunk_embeddings_when_available(tmp_path):
@@ -658,6 +1070,7 @@ def test_search_knowledge_base_uses_chunk_embeddings_when_available(tmp_path):
             edges=[],
             metadata=GraphMetadata(
                 source=source,
+                content_hash=document_content_hash(chunk.text),
                 created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
             ),
         )

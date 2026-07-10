@@ -71,3 +71,21 @@ def test_save_uses_source_path_in_filename(tmp_path):
     assert (tmp_path / f"{source_key('docs/api/guide.md')}.json").exists()
     assert (tmp_path / f"{source_key('docs/user/guide.md')}.json").exists()
     assert len(list(tmp_path.glob("*.json"))) == 2
+
+
+def test_delete_removes_saved_chunks(tmp_path):
+    store = JsonChunkStore(tmp_path)
+    chunks = [
+        Chunk(
+            id="doc-chunk-0000",
+            source="doc.md",
+            index=0,
+            text="Text",
+        )
+    ]
+    store.save("doc.md", chunks)
+
+    store.delete("doc.md")
+
+    with pytest.raises(FileNotFoundError):
+        store.load("doc.md")

@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.retrieval import JsonChunkEmbeddingStore, retrieve_context
@@ -72,6 +74,8 @@ def _graph() -> KnowledgeGraph:
                 id="pydantic",
                 label="Pydantic",
                 type="Library",
+                suggested_type="schema validator",
+                aliases=["data parser"],
                 properties={"purpose": "data validation"},
                 chunk_ids=["doc-chunk-0001", "missing-chunk"],
             ),
@@ -94,6 +98,7 @@ def _graph() -> KnowledgeGraph:
                 source="pydantic",
                 target="python",
                 label="built_for",
+                properties={"compatibility": "Python 3.13"},
                 chunk_ids=["doc-chunk-0001"],
             ),
             Edge(
@@ -113,58 +118,72 @@ def _graph() -> KnowledgeGraph:
         ],
         metadata=GraphMetadata(
             source="doc.md",
+            content_hash="hash",
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
 
 
-def test_retrieve_context_retrieves_relevant_nodes_from_properties():
-    result = retrieve_context(
-        "data validation library",
-        _graph(),
-        _chunks(),
-        top_nodes=2,
+@pytest.mark.parametrize(
+    "query",
+    [
+        "data parser",
+        "schema validator",
+        "purpose data validation",
+    ],
+)
+def test_retrieve_context_bm25_searches_enriched_node_fields(query):
+    chunks = [
+        Chunk(
+            id="target",
+            source="doc.md",
+            index=0,
+            text="Ordinary content.",
+        ),
+        Chunk(
+            id="other",
+            source="doc.md",
+            index=1,
+            text="Unrelated billing content.",
+        ),
+    ]
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="entity",
+                label="Pydantic",
+                type="Library",
+                suggested_type="schema validator",
+                aliases=["data parser"],
+                properties={"purpose": "data validation"},
+                chunk_ids=["target"],
+            )
+        ],
+        edges=[],
     )
 
-    assert result.node_hits[0].node.id == "pydantic"
-    assert result.node_hits[0].matched_text == "Pydantic"
+    result = retrieve_context(query, graph, chunks, top_chunks=1)
+
+    assert [hit.chunk.id for hit in result.chunks] == ["target"]
+    assert [node.id for node in result.chunks[0].linked_nodes] == ["entity"]
 
 
-def test_retrieve_context_retrieves_only_edges_connected_to_selected_nodes():
+def test_retrieve_context_bm25_searches_enriched_relationship_fields():
     result = retrieve_context(
-        "data validation library",
+        "compatibility 3 13",
         _graph(),
         _chunks(),
-        top_nodes=1,
-        top_edges=5,
+        top_chunks=1,
     )
 
-    edge_ids = {hit.edge.id for hit in result.relationship_hits}
-
-    assert edge_ids
-    assert edge_ids <= {"edge-0001", "edge-0002"}
-    assert "edge-0003" not in edge_ids
-
-
-def test_retrieve_context_boosts_chunks_linked_by_nodes_and_edges():
-    result = retrieve_context(
-        "data validation built for python",
-        _graph(),
-        _chunks(),
-        top_nodes=2,
-        top_edges=1,
-        top_chunks=3,
-    )
-
-    top_chunk = result.chunks[0]
-
-    assert top_chunk.chunk.id == "doc-chunk-0001"
-    assert result.sources == ["doc.md"]
-    assert "pydantic" in top_chunk.linked_node_ids
-    assert "edge-0001" in top_chunk.linked_edge_ids
+    assert [hit.chunk.id for hit in result.chunks] == ["doc-chunk-0001"]
+    assert [
+        relationship.edge.id
+        for relationship in result.chunks[0].linked_relationships
+    ] == ["edge-0001"]
 
 
-def test_retrieve_context_bm25_searches_chunks_without_node_matches():
+def test_retrieve_context_bm25_searches_chunks_without_graph_matches():
     chunks = [
         Chunk(
             id="doc-chunk-0000",
@@ -174,22 +193,16 @@ def test_retrieve_context_bm25_searches_chunks_without_node_matches():
             heading_path=["Operations"],
         )
     ]
-    graph = KnowledgeGraph(
-        nodes=[
-            Node(
-                id="unrelated",
-                label="Unrelated",
-                type="Concept",
-                chunk_ids=["doc-chunk-0000"],
-            )
-        ],
-        edges=[],
+
+    result = retrieve_context(
+        "throttling errors",
+        KnowledgeGraph(nodes=[], edges=[]),
+        chunks,
     )
 
-    result = retrieve_context("throttling errors", graph, chunks)
-
-    assert result.node_hits == []
     assert [hit.chunk.id for hit in result.chunks] == ["doc-chunk-0000"]
+    assert result.chunks[0].linked_nodes == []
+    assert result.chunks[0].linked_relationships == []
 
 
 def test_retrieve_context_uses_semantic_chunk_search(tmp_path):
@@ -230,12 +243,15 @@ def test_retrieve_context_uses_semantic_chunk_search(tmp_path):
     assert store.exists() is True
 
 
-def test_retrieve_context_reuses_and_refreshes_chunk_embedding_cache(tmp_path):
+def test_retrieve_context_reuses_and_refreshes_enriched_chunk_embedding_cache(
+    tmp_path,
+):
     store = JsonChunkEmbeddingStore(tmp_path / "chunk_embeddings.json")
     embedding = FakeEmbeddingClient(
         {
             "install hangs": [1.0, 0.0],
-            "Setup stalls": [1.0, 0.0],
+            "setup assistant": [1.0, 0.0],
+            "deployment helper": [1.0, 0.0],
         }
     )
     chunks = [
@@ -243,24 +259,35 @@ def test_retrieve_context_reuses_and_refreshes_chunk_embedding_cache(tmp_path):
             id="doc-chunk-0000",
             source="doc.md",
             index=0,
-            text="Setup stalls after authentication.",
-            heading_path=["Deploy"],
+            text="Ordinary content.",
         )
     ]
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="setup",
+                label="Setup",
+                type="Process",
+                aliases=["setup assistant"],
+                chunk_ids=["doc-chunk-0000"],
+            )
+        ],
+        edges=[],
+    )
 
     retrieve_context(
         "install hangs",
-        KnowledgeGraph(nodes=[], edges=[]),
+        graph,
         chunks,
         embedding_client=embedding,
         chunk_embedding_store=store,
     )
-    assert any("Setup stalls after authentication" in call for call in embedding.calls)
+    assert any("setup assistant" in call for call in embedding.calls)
 
     embedding.calls.clear()
     retrieve_context(
         "install hangs",
-        KnowledgeGraph(nodes=[], edges=[]),
+        graph,
         chunks,
         embedding_client=embedding,
         chunk_embedding_store=store,
@@ -268,62 +295,145 @@ def test_retrieve_context_reuses_and_refreshes_chunk_embedding_cache(tmp_path):
     assert embedding.calls == ["install hangs"]
 
     embedding.calls.clear()
-    changed_chunks = [
-        chunks[0].model_copy(
-            update={"text": "Setup stalls after authentication recovery."}
-        )
-    ]
+    changed_graph = graph.model_copy(
+        update={
+            "nodes": [
+                graph.nodes[0].model_copy(
+                    update={"aliases": ["deployment helper"]}
+                )
+            ]
+        }
+    )
     retrieve_context(
         "install hangs",
-        KnowledgeGraph(nodes=[], edges=[]),
-        changed_chunks,
+        changed_graph,
+        chunks,
         embedding_client=embedding,
         chunk_embedding_store=store,
     )
 
-    assert any("authentication recovery" in call for call in embedding.calls)
+    assert any("deployment helper" in call for call in embedding.calls)
 
 
-def test_retrieve_context_deduplicates_chunks_and_preserves_ranked_output():
+def test_retrieve_context_combines_only_normalized_bm25_and_semantic_scores(tmp_path):
+    embedding = FakeEmbeddingClient(
+        {
+            "validation": [1.0, 0.0],
+            "Pydantic": [1.0, 0.0],
+        }
+    )
+
+    result = retrieve_context(
+        "validation",
+        _graph(),
+        _chunks(),
+        embedding_client=embedding,
+        chunk_embedding_store=JsonChunkEmbeddingStore(tmp_path / "embeddings.json"),
+    )
+
+    assert result.chunks[0].score == pytest.approx(2.0)
+    assert all(0.0 < hit.score <= 2.0 for hit in result.chunks)
+
+
+def test_prominent_graph_annotations_do_not_override_stronger_evidence():
+    chunks = [
+        Chunk(
+            id="evidence",
+            source="doc.md",
+            index=0,
+            text="Throttling recovery reduces throttling failures during recovery.",
+        ),
+        Chunk(
+            id="graph-heavy",
+            source="doc.md",
+            index=1,
+            text="General operations overview.",
+        ),
+    ]
+    nodes = [
+        Node(
+            id="throttling",
+            label="Throttling",
+            type="Concept",
+            chunk_ids=["graph-heavy"],
+        ),
+        *[
+            Node(
+                id=f"node-{index:02d}",
+                label=f"Operational topic {index}",
+                type="Concept",
+                chunk_ids=["graph-heavy"],
+            )
+            for index in range(10)
+        ],
+    ]
+    graph = KnowledgeGraph(nodes=nodes, edges=[])
+
+    result = retrieve_context("throttling recovery", graph, chunks)
+
+    assert result.chunks[0].chunk.id == "evidence"
+    assert result.chunks[0].score <= 1.0
+
+
+def test_retrieve_context_attaches_only_selected_chunk_graph_annotations():
     result = retrieve_context(
         "data validation built for python",
         _graph(),
         _chunks(),
-        top_nodes=2,
-        top_edges=1,
+        top_chunks=1,
+    )
+
+    hit = result.chunks[0]
+    assert hit.chunk.id == "doc-chunk-0001"
+    assert [node.id for node in hit.linked_nodes] == ["pydantic", "python"]
+    assert [
+        relationship.edge.id
+        for relationship in hit.linked_relationships
+    ] == ["edge-0001"]
+    relationship = hit.linked_relationships[0]
+    assert relationship.source_node.id == "pydantic"
+    assert relationship.target_node.id == "python"
+    assert "fastapi" not in {node.id for node in hit.linked_nodes}
+
+
+def test_retrieve_context_deduplicates_chunks_and_preserves_ranked_output():
+    chunks = _chunks()
+
+    result = retrieve_context(
+        "data validation built for python",
+        _graph(),
+        [*chunks, chunks[1]],
         top_chunks=3,
     )
 
     chunk_ids = [hit.chunk.id for hit in result.chunks]
-
     assert chunk_ids.count("doc-chunk-0001") == 1
     assert chunk_ids[0] == "doc-chunk-0001"
 
 
-def test_retrieve_context_builds_agent_context_text():
+def test_retrieve_context_builds_chunk_centric_context_text():
     result = retrieve_context(
         "data validation built for python",
         _graph(),
         _chunks(),
-        top_nodes=2,
-        top_edges=1,
         top_chunks=1,
     )
 
-    assert "Relevant nodes:" in result.context_text
-    assert "Pydantic [Library]" in result.context_text
+    evidence_index = result.context_text.index(
+        "Pydantic is a validation library built for Python."
+    )
+    entities_index = result.context_text.index("Linked entities:")
+    relationships_index = result.context_text.index("Linked relationships:")
+    assert evidence_index < entities_index < relationships_index
+    assert "Pydantic [Library] | aliases: data parser" in result.context_text
     assert "Pydantic --built_for--> Python" in result.context_text
+    assert "compatibility" in result.context_text
     assert "[doc-chunk-0001 | doc.md | Python > Pydantic]" in result.context_text
-    assert "Pydantic is a validation library built for Python." in result.context_text
 
 
-def test_retrieve_context_returns_empty_hits_for_no_matches():
+def test_retrieve_context_returns_empty_result_for_no_matches():
     result = retrieve_context("xylophone", _graph(), _chunks())
 
-    assert result.node_hits == []
-    assert result.relationship_hits == []
     assert result.chunks == []
     assert result.sources == []
-    assert "Relevant nodes:\n- None" in result.context_text
-    assert "Relevant relationships:\n- None" in result.context_text
-    assert "Evidence:\n- None" in result.context_text
+    assert result.context_text == "Query: xylophone\n\nEvidence:\n- None"

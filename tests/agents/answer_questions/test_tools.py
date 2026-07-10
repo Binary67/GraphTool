@@ -12,8 +12,6 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
         return RetrievalResult(
             query=query,
             sources=["docs/guide.md"],
-            node_hits=[],
-            relationship_hits=[],
             chunks=[],
             context_text="Relevant context",
         )
@@ -51,8 +49,6 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
                 "knowledge_base_store": knowledge_base_store,
                 "embedding_client": embedding_client,
                 "chunk_embedding_store": chunk_embedding_store,
-                "top_nodes": 5,
-                "top_edges": 5,
                 "top_chunks": 5,
             },
         )

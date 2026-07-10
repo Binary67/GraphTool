@@ -9,8 +9,7 @@ from graphtool.retrieval.embedding_store import (
 from graphtool.retrieval.retriever import retrieve_context
 from graphtool.retrieval.types import (
     ChunkHit,
-    NodeHit,
-    RelationshipHit,
+    ChunkRelationship,
     RetrievalResult,
 )
 
@@ -18,11 +17,10 @@ __all__ = [
     "BM25Document",
     "BM25Index",
     "ChunkHit",
+    "ChunkRelationship",
     "ChunkEmbeddingRecord",
     "ChunkEmbeddingStore",
     "JsonChunkEmbeddingStore",
-    "NodeHit",
-    "RelationshipHit",
     "RetrievalResult",
     "retrieve_context",
 ]

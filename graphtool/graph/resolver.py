@@ -8,8 +8,15 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphtool.graph.embedding_store import NodeEmbeddingRecord
+from graphtool.graph.provenance import (
+    add_edge_provenance,
+    add_node_provenance,
+    canonicalize_node,
+    merge_edges,
+    merge_nodes,
+)
 from graphtool.graph.taxonomy import UNCLASSIFIED_NODE_TYPE, normalize_type_name
-from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient, LLMClient
 from graphtool.llm.types import LLMMessage
 
@@ -81,7 +88,7 @@ class SemanticEntityResolver:
 
         if existing is not None:
             for node in existing.nodes:
-                canonical = _canonicalize_new_node(node)
+                canonical = canonicalize_node(node)
                 canonical_nodes.append(canonical)
                 canonical_by_id[canonical.id] = canonical
                 node_id_map[node.id] = canonical.id
@@ -97,6 +104,7 @@ class SemanticEntityResolver:
                     node,
                     canonical_nodes,
                     canonical_by_id,
+                    graph.metadata,
                 )
                 node_id_map[node.id] = canonical_id
 
@@ -119,15 +127,32 @@ class SemanticEntityResolver:
         node: Node,
         canonical_nodes: list[Node],
         canonical_by_id: dict[str, Node],
+        metadata: GraphMetadata | None,
     ) -> str:
         existing = canonical_by_id.get(node.id)
-        if existing is not None:
-            self._merge_into(existing, node, canonical_nodes, canonical_by_id)
+        if existing is not None and _same_node_contribution(
+            existing,
+            node.id,
+            metadata,
+        ):
+            self._merge_into(
+                existing,
+                node,
+                canonical_nodes,
+                canonical_by_id,
+                metadata=metadata,
+            )
             return existing.id
 
         normalized_match = _find_normalized_match(node, canonical_nodes)
         if normalized_match is not None:
-            self._merge_into(normalized_match, node, canonical_nodes, canonical_by_id)
+            self._merge_into(
+                normalized_match,
+                node,
+                canonical_nodes,
+                canonical_by_id,
+                metadata=metadata,
+            )
             return normalized_match.id
 
         candidates = self._embedding_candidates(node, canonical_nodes)
@@ -145,11 +170,16 @@ class SemanticEntityResolver:
                     node,
                     canonical_nodes,
                     canonical_by_id,
+                    metadata=metadata,
                     aliases_to_add=decision.aliases_to_add,
                 )
                 return target.id
 
-        canonical = _canonicalize_new_node(node)
+        canonical = canonicalize_node(add_node_provenance(node, metadata))
+        if canonical.id in canonical_by_id:
+            canonical = canonical.model_copy(
+                update={"id": _next_node_id(canonical.id, canonical_by_id)}
+            )
         canonical_nodes.append(canonical)
         canonical_by_id[canonical.id] = canonical
         return canonical.id
@@ -160,9 +190,18 @@ class SemanticEntityResolver:
         incoming: Node,
         canonical_nodes: list[Node],
         canonical_by_id: dict[str, Node],
+        metadata: GraphMetadata | None,
         aliases_to_add: Sequence[str] = (),
     ) -> None:
-        merged = _merge_nodes(existing, incoming, aliases_to_add)
+        if metadata is None:
+            merged = merge_nodes(existing, incoming, aliases_to_add)
+        else:
+            contributed = add_node_provenance(
+                incoming,
+                metadata,
+                aliases_to_add,
+            )
+            merged = merge_nodes(existing, contributed)
         index = canonical_nodes.index(existing)
         canonical_nodes[index] = merged
         canonical_by_id[merged.id] = merged
@@ -304,37 +343,28 @@ def _accepted_target_id(
     return decision.target_node_id
 
 
-def _canonicalize_new_node(node: Node) -> Node:
-    return node.model_copy(
-        update={
-            "aliases": _unique_aliases(node.label, node.aliases),
-            "chunk_ids": _extend_unique([], node.chunk_ids),
-        }
-    )
-
-
-def _merge_nodes(
+def _same_node_contribution(
     existing: Node,
-    incoming: Node,
-    aliases_to_add: Sequence[str] = (),
-) -> Node:
-    alias_additions = []
-    if _normalize_name(incoming.label) != _normalize_name(existing.label):
-        alias_additions.append(incoming.label)
-    alias_additions.extend(incoming.aliases)
-    alias_additions.extend(aliases_to_add)
-
-    return existing.model_copy(
-        update={
-            "type": _merge_node_type(existing, incoming),
-            "suggested_type": existing.suggested_type or incoming.suggested_type,
-            "aliases": _unique_aliases(
-                existing.label,
-                [*existing.aliases, *alias_additions],
-            ),
-            "chunk_ids": _extend_unique(existing.chunk_ids, incoming.chunk_ids),
-        }
+    node_id: str,
+    metadata: GraphMetadata | None,
+) -> bool:
+    if metadata is None:
+        return True
+    return any(
+        provenance.source == metadata.source
+        and provenance.content_hash == metadata.content_hash
+        and provenance.node_id == node_id
+        for provenance in existing.provenance
     )
+
+
+def _next_node_id(node_id: str, canonical_by_id: Mapping[str, Node]) -> str:
+    index = 2
+    while True:
+        candidate = f"{node_id}::{index:04d}"
+        if candidate not in canonical_by_id:
+            return candidate
+        index += 1
 
 
 def _find_normalized_match(node: Node, canonical_nodes: Sequence[Node]) -> Node | None:
@@ -394,30 +424,6 @@ def _comparable_node_types(left: Node, right: Node) -> bool:
     )
 
 
-def _merge_node_type(existing: Node, incoming: Node) -> str:
-    existing_type = normalize_type_name(existing.type)
-    incoming_type = normalize_type_name(incoming.type)
-    if (
-        existing_type == UNCLASSIFIED_NODE_TYPE
-        and incoming_type != UNCLASSIFIED_NODE_TYPE
-    ):
-        return incoming.type
-    return existing.type
-
-
-def _unique_aliases(label: str, aliases: Sequence[str]) -> list[str]:
-    label_key = _normalize_name(label)
-    seen = {label_key}
-    unique = []
-    for alias in aliases:
-        normalized = _normalize_name(alias)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        unique.append(alias)
-    return unique
-
-
 def _dedupe_remapped_edges(
     graphs: Sequence[KnowledgeGraph],
     node_id_map: Mapping[str, str],
@@ -426,20 +432,19 @@ def _dedupe_remapped_edges(
 
     for graph in graphs:
         for edge in graph.edges:
+            contributed = add_edge_provenance(edge, graph.metadata)
             source = node_id_map.get(edge.source, edge.source)
             target = node_id_map.get(edge.target, edge.target)
-            remapped = edge.model_copy(update={"source": source, "target": target})
+            remapped = contributed.model_copy(
+                update={"source": source, "target": target}
+            )
             key = (source, target, remapped.label)
             existing = edges_by_key.get(key)
             if existing is None:
                 edges_by_key[key] = remapped
                 continue
 
-            edges_by_key[key] = existing.model_copy(
-                update={
-                    "chunk_ids": _extend_unique(existing.chunk_ids, remapped.chunk_ids)
-                }
-            )
+            edges_by_key[key] = merge_edges(existing, remapped)
 
     return list(edges_by_key.values())
 
@@ -463,11 +468,7 @@ def _merge_edges(existing: Sequence[Edge], incoming: Sequence[Edge]) -> list[Edg
             edge_id, next_index = _next_edge_id(used_ids, next_index)
             by_key[key] = edge.model_copy(update={"id": edge_id})
             continue
-        by_key[key] = match.model_copy(
-            update={
-                "chunk_ids": _extend_unique(match.chunk_ids, edge.chunk_ids)
-            }
-        )
+        by_key[key] = merge_edges(match, edge)
     return list(by_key.values())
 
 

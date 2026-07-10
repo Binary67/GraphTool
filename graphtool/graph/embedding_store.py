@@ -62,5 +62,8 @@ class JsonGraphEmbeddingStore:
     def exists(self, source: str) -> bool:
         return self._path_for(source).exists()
 
+    def delete(self, source: str) -> None:
+        self._path_for(source).unlink(missing_ok=True)
+
     def _path_for(self, source: str) -> Path:
         return self._directory / f"{source_key(source)}.json"

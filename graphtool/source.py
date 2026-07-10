@@ -3,6 +3,10 @@ import re
 from pathlib import PurePosixPath
 
 
+def document_content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def source_key(source: str) -> str:
     normalized = source.replace("\\", "/").strip()
     stem = PurePosixPath(normalized).stem

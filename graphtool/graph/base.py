@@ -21,3 +21,7 @@ class KnowledgeGraphStore(Protocol):
     def load_all(self) -> list[KnowledgeGraph]:
         """Load all persisted knowledge graphs."""
         ...
+
+    def delete(self, source: str) -> None:
+        """Delete the graph persisted for source."""
+        ...
