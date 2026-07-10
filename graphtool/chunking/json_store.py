@@ -58,6 +58,15 @@ class JsonChunkStore:
         next_chunk = chunks[position + 1] if position + 1 < len(chunks) else None
         return previous, current, next_chunk
 
+    def load_all(self) -> list[Chunk]:
+        if not self._directory.exists():
+            return []
+        chunks = []
+        for path in sorted(self._directory.glob("*.json")):
+            data = json.loads(path.read_text())
+            chunks.extend(Chunk.model_validate(item) for item in data)
+        return chunks
+
     def delete(self, source: str) -> None:
         self._path_for(source).unlink(missing_ok=True)
 

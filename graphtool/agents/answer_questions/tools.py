@@ -14,6 +14,7 @@ from graphtool.chunking.types import Chunk
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
+from graphtool.retrieval.retriever import retrieve_context
 
 AllowedChunkKeys = set[tuple[str, str]]
 
@@ -28,16 +29,21 @@ def make_retrieve_knowledge_context_tool(
     allowed_chunks: AllowedChunkKeys | None = None,
     top_chunks: int = 5,
 ) -> BaseTool:
+    context = corpus.load_search_context(
+        graph_store,
+        chunk_store,
+        knowledge_base_store=knowledge_base_store,
+    )
+
     def retrieve_knowledge_context(query: str) -> str:
         """Search the knowledge graph and return relevant context for a query."""
-        result = corpus.search_knowledge_base(
+        result = retrieve_context(
             query,
-            graph_store,
-            chunk_store,
-            knowledge_base_store=knowledge_base_store,
+            context.graph,
+            context.chunks,
+            top_chunks=top_chunks,
             embedding_client=embedding_client,
             chunk_embedding_store=chunk_embedding_store,
-            top_chunks=top_chunks,
         )
         chunk_references = [
             ChunkReference(

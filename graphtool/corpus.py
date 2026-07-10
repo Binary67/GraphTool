@@ -34,6 +34,12 @@ class CorpusSyncResult:
 
 
 @dataclass(frozen=True)
+class SearchContext:
+    graph: KnowledgeGraph
+    chunks: list[Chunk]
+
+
+@dataclass(frozen=True)
 class _PreparedDocument:
     source: str
     chunks: list[Chunk]
@@ -66,6 +72,29 @@ def load_markdown_documents(
     return documents
 
 
+def load_search_context(
+    graph_store: JsonGraphStore,
+    chunk_store: JsonChunkStore,
+    *,
+    knowledge_base_store: JsonKnowledgeBaseStore | None = None,
+) -> SearchContext:
+    if knowledge_base_store is not None and knowledge_base_store.exists():
+        return SearchContext(
+            graph=knowledge_base_store.load(),
+            chunks=chunk_store.load_all(),
+        )
+
+    graphs = graph_store.load_all()
+    chunks: list[Chunk] = []
+    for graph in graphs:
+        if graph.metadata is None:
+            raise ValueError("Cannot search graph without metadata.source.")
+        chunks.extend(chunk_store.load(graph.metadata.source))
+
+    graph = _load_or_rebuild_knowledge_base(graphs, knowledge_base_store)
+    return SearchContext(graph=graph, chunks=chunks)
+
+
 def search_knowledge_base(
     query: str,
     graph_store: JsonGraphStore,
@@ -76,18 +105,15 @@ def search_knowledge_base(
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
     top_chunks: int = 5,
 ) -> RetrievalResult:
-    graphs = graph_store.load_all()
-    chunks = []
-    for graph in graphs:
-        if graph.metadata is None:
-            raise ValueError("Cannot search graph without metadata.source.")
-        chunks.extend(chunk_store.load(graph.metadata.source))
-
-    graph = _load_or_rebuild_knowledge_base(graphs, knowledge_base_store)
+    context = load_search_context(
+        graph_store,
+        chunk_store,
+        knowledge_base_store=knowledge_base_store,
+    )
     return retrieve_context(
         query,
-        graph,
-        chunks,
+        context.graph,
+        context.chunks,
         top_chunks=top_chunks,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,

@@ -6,26 +6,34 @@ from graphtool.agents.answer_questions.tools import (
 )
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.types import Chunk
+from graphtool.corpus import SearchContext
+from graphtool.graph.types import KnowledgeGraph
 from graphtool.retrieval.types import ChunkHit, RetrievalResult
 
 
 def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch):
-    calls = []
+    retrieve_calls = []
 
-    def fake_search_knowledge_base(query, graph_store, chunk_store, **kwargs):
-        calls.append((query, graph_store, chunk_store, kwargs))
+    chunk = Chunk(
+        id="guide-chunk-0002",
+        source="docs/guide.md",
+        index=2,
+        text="Relevant context",
+        heading_path=["Guide", "Agents"],
+    )
+    graph = KnowledgeGraph(nodes=[], edges=[])
+
+    def fake_load_search_context(graph_store, chunk_store, *, knowledge_base_store=None):
+        return SearchContext(graph=graph, chunks=[chunk])
+
+    def fake_retrieve_context(query, graph, chunks, **kwargs):
+        retrieve_calls.append((query, graph, chunks, kwargs))
         return RetrievalResult(
             query=query,
             sources=["docs/guide.md"],
             chunks=[
                 ChunkHit(
-                    chunk=Chunk(
-                        id="guide-chunk-0002",
-                        source="docs/guide.md",
-                        index=2,
-                        text="Relevant context",
-                        heading_path=["Guide", "Agents"],
-                    ),
+                    chunk=chunk,
                     score=1.0,
                     linked_nodes=[],
                     linked_relationships=[],
@@ -35,8 +43,12 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
         )
 
     monkeypatch.setattr(
-        "graphtool.agents.answer_questions.tools.corpus.search_knowledge_base",
-        fake_search_knowledge_base,
+        "graphtool.agents.answer_questions.tools.corpus.load_search_context",
+        fake_load_search_context,
+    )
+    monkeypatch.setattr(
+        "graphtool.agents.answer_questions.tools.retrieve_context",
+        fake_retrieve_context,
     )
     graph_store = object()
     chunk_store = object()
@@ -70,16 +82,15 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
         "context_text": "Relevant context",
     }
     assert allowed_chunks == {("docs/guide.md", "guide-chunk-0002")}
-    assert calls == [
+    assert retrieve_calls == [
         (
             "What does GraphTool use?",
-            graph_store,
-            chunk_store,
+            graph,
+            [chunk],
             {
-                "knowledge_base_store": knowledge_base_store,
+                "top_chunks": 5,
                 "embedding_client": embedding_client,
                 "chunk_embedding_store": chunk_embedding_store,
-                "top_chunks": 5,
             },
         )
     ]

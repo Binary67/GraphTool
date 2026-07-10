@@ -7,6 +7,7 @@ from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.types import Chunk
 from graphtool.corpus import (
     load_markdown_documents,
+    load_search_context,
     rebuild_knowledge_base,
     search_knowledge_base,
     synchronize_documents,
@@ -1102,3 +1103,64 @@ def test_search_knowledge_base_raises_when_saved_graph_has_no_chunks(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         search_knowledge_base("validation", graph_store, chunk_store)
+
+
+def test_load_search_context_loads_cached_graph_and_all_chunks(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    pydantic_chunk = _chunk(
+        "docs/pydantic.md", "# Pydantic\nValidation.", "Pydantic"
+    )
+    fastapi_chunk = _chunk(
+        "docs/fastapi.md", "# FastAPI\nValidation.", "FastAPI"
+    )
+    chunk_store.save("docs/pydantic.md", [pydantic_chunk])
+    chunk_store.save("docs/fastapi.md", [fastapi_chunk])
+    knowledge_base = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="kb-node",
+                label="KB",
+                type="Concept",
+                chunk_ids=[pydantic_chunk.id],
+            )
+        ],
+        edges=[],
+    )
+    knowledge_base_store.save(knowledge_base)
+
+    context = load_search_context(
+        graph_store, chunk_store, knowledge_base_store=knowledge_base_store
+    )
+
+    assert context.graph == knowledge_base
+    assert {chunk.id for chunk in context.chunks} == {
+        pydantic_chunk.id,
+        fastapi_chunk.id,
+    }
+
+
+def test_load_search_context_falls_back_to_document_graphs_without_kb_store(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    chunk = _chunk("docs/guide.md", "# Guide\nContent.", "Guide")
+    chunk_store.save("docs/guide.md", [chunk])
+    graph_store.save(_graph("docs/guide.md", chunk, "guide", "Guide"))
+
+    context = load_search_context(graph_store, chunk_store)
+
+    assert [chunk.id for chunk in context.chunks] == [chunk.id]
+    assert any(node.label == "Guide" for node in context.graph.nodes)
+
+
+def test_load_search_context_raises_when_graph_has_no_chunks(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    chunk = _chunk("docs/missing.md", "# Missing\nValidation.", "Missing")
+    graph_store.save(_graph("docs/missing.md", chunk, "missing", "Missing"))
+
+    with pytest.raises(FileNotFoundError):
+        load_search_context(graph_store, chunk_store)
