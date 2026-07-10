@@ -406,7 +406,10 @@ def migrate_promoted_types(
 
         nodes.append(
             node.model_copy(
-                update={"type": normalize_type_name(suggested_type)}
+                update={
+                    "type": normalize_type_name(suggested_type),
+                    "suggested_type": None,
+                }
             )
         )
     return graph.model_copy(update={"nodes": nodes})

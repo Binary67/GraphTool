@@ -71,7 +71,7 @@ def test_promote_suggestions_updates_registry_and_migrates_unclassified_nodes():
 
     assert "distribution_channel" in result.registry.types
     assert all(
-        node.type == "distribution_channel"
+        node.type == "distribution_channel" and node.suggested_type is None
         for graph in result.graphs
         for node in graph.nodes
     )
@@ -104,6 +104,7 @@ def test_promote_suggestions_keeps_small_suggestions_pending():
 
     assert "distribution_channel" not in result.registry.types
     assert result.graphs[0].nodes[0].type == "unclassified"
+    assert result.graphs[0].nodes[0].suggested_type == "distribution channel"
     assert result.promotions == []
 
 
