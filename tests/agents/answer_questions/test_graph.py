@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool
 
 from graphtool.agents.answer_questions.graph import build_answer_question_graph
-from graphtool.agents.answer_questions.runner import MAX_AGENT_ITERATIONS
+from graphtool.agents.answer_questions.runner import AGENT_RECURSION_LIMIT
 
 
 class ToolCallingModel(FakeMessagesListChatModel):
@@ -13,7 +13,7 @@ class ToolCallingModel(FakeMessagesListChatModel):
         return self
 
 
-def test_agent_runs_search_then_neighborhood_within_recursion_limit():
+def test_agent_runs_multiple_retrievals_within_recursion_limit():
     calls = []
 
     def search(query: str) -> str:
@@ -51,6 +51,17 @@ def test_agent_runs_search_then_neighborhood_within_recursion_limit():
                     }
                 ],
             ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "retrieve_knowledge_context",
+                        "args": {"query": "follow-up topic"},
+                        "id": "search-2",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
             AIMessage(content="Final answer"),
         ]
     )
@@ -70,11 +81,12 @@ def test_agent_runs_search_then_neighborhood_within_recursion_limit():
 
     result = graph.invoke(
         {"messages": [{"role": "user", "content": "Question"}]},
-        config={"recursion_limit": MAX_AGENT_ITERATIONS},
+        config={"recursion_limit": AGENT_RECURSION_LIMIT},
     )
 
     assert calls == [
         ("search", "target topic"),
         ("neighborhood", "docs/guide.md", "guide-chunk-0001"),
+        ("search", "follow-up topic"),
     ]
     assert result["messages"][-1].content == "Final answer"

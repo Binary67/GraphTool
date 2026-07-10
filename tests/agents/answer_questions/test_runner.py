@@ -1,9 +1,6 @@
 from langchain_core.messages import AIMessage, ToolMessage
 
-from graphtool.agents.answer_questions.runner import (
-    MAX_AGENT_ITERATIONS,
-    answer_question,
-)
+from graphtool.agents.answer_questions.runner import answer_question
 from graphtool.agents.answer_questions.types import (
     ChunkNeighborhood,
     ChunkReference,
@@ -170,6 +167,6 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
                     }
                 ]
             },
-            {"recursion_limit": MAX_AGENT_ITERATIONS},
+            {"recursion_limit": 20},
         )
     ]

@@ -18,7 +18,7 @@ from graphtool.agents.answer_questions.types import (
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.runtime import create_runtime
 
-MAX_AGENT_ITERATIONS = 6
+AGENT_RECURSION_LIMIT = 20
 _TOOL_RESULT_ADAPTER = TypeAdapter(
     Annotated[
         RetrievedContext | ChunkNeighborhood,
@@ -49,7 +49,7 @@ def answer_question(
     graph = build_answer_question_graph(model, [search_tool, neighborhood_tool])
     result = graph.invoke(
         {"messages": [{"role": "user", "content": question}]},
-        config={"recursion_limit": MAX_AGENT_ITERATIONS},
+        config={"recursion_limit": AGENT_RECURSION_LIMIT},
     )
     messages = list(result.get("messages", []))
     retrievals = _extract_retrievals(messages)
