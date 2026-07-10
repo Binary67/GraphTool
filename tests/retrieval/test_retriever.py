@@ -168,6 +168,78 @@ def test_retrieve_context_bm25_searches_enriched_node_fields(query):
     assert [node.id for node in result.chunks[0].linked_nodes] == ["entity"]
 
 
+def test_retrieve_context_prioritizes_entity_label_over_heading():
+    chunks = [
+        Chunk(
+            id="entity-label",
+            source="doc.md",
+            index=0,
+            text="General product overview.",
+            heading_path=["Products"],
+        ),
+        Chunk(
+            id="heading-only",
+            source="doc.md",
+            index=1,
+            text="General configuration overview.",
+            heading_path=["Claude Code"],
+        ),
+    ]
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="claude-code",
+                label="Claude Code",
+                type="Product",
+                chunk_ids=["entity-label"],
+            )
+        ],
+        edges=[],
+    )
+
+    result = retrieve_context("Claude Code", graph, chunks)
+
+    assert [hit.chunk.id for hit in result.chunks] == [
+        "entity-label",
+        "heading-only",
+    ]
+    assert result.chunks[0].score > result.chunks[1].score
+
+
+def test_retrieve_context_prioritizes_alias_over_content():
+    chunks = [
+        Chunk(
+            id="alias",
+            source="doc.md",
+            index=0,
+            text="General command overview.",
+        ),
+        Chunk(
+            id="content-only",
+            source="doc.md",
+            index=1,
+            text="Conversation reset instructions.",
+        ),
+    ]
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="compact",
+                label="/compact",
+                type="Feature",
+                aliases=["conversation reset"],
+                chunk_ids=["alias"],
+            )
+        ],
+        edges=[],
+    )
+
+    result = retrieve_context("conversation reset", graph, chunks)
+
+    assert [hit.chunk.id for hit in result.chunks] == ["alias", "content-only"]
+    assert result.chunks[0].score > result.chunks[1].score
+
+
 def test_retrieve_context_bm25_searches_enriched_relationship_fields():
     result = retrieve_context(
         "compatibility 3 13",
@@ -315,24 +387,46 @@ def test_retrieve_context_reuses_and_refreshes_enriched_chunk_embedding_cache(
     assert any("deployment helper" in call for call in embedding.calls)
 
 
-def test_retrieve_context_combines_only_normalized_bm25_and_semantic_scores(tmp_path):
+def test_retrieve_context_combines_weighted_normalized_fields_and_semantic_score(
+    tmp_path,
+):
     embedding = FakeEmbeddingClient(
         {
             "validation": [1.0, 0.0],
-            "Pydantic": [1.0, 0.0],
         }
+    )
+    chunks = [
+        Chunk(
+            id="target",
+            source="doc.md",
+            index=0,
+            text="Validation content.",
+            heading_path=["Validation"],
+        )
+    ]
+    graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="validation",
+                label="Validation",
+                type="Validation",
+                aliases=["validation"],
+                chunk_ids=["target"],
+            )
+        ],
+        edges=[],
     )
 
     result = retrieve_context(
         "validation",
-        _graph(),
-        _chunks(),
+        graph,
+        chunks,
         embedding_client=embedding,
         chunk_embedding_store=JsonChunkEmbeddingStore(tmp_path / "embeddings.json"),
     )
 
-    assert result.chunks[0].score == pytest.approx(2.0)
-    assert all(0.0 < hit.score <= 2.0 for hit in result.chunks)
+    assert result.chunks[0].score == pytest.approx(6.0)
+    assert all(0.0 < hit.score <= 6.0 for hit in result.chunks)
 
 
 def test_prominent_graph_annotations_do_not_override_stronger_evidence():
@@ -352,20 +446,12 @@ def test_prominent_graph_annotations_do_not_override_stronger_evidence():
     ]
     nodes = [
         Node(
-            id="throttling",
-            label="Throttling",
+            id=f"node-{index:02d}",
+            label=f"Operational topic {index}",
             type="Concept",
             chunk_ids=["graph-heavy"],
-        ),
-        *[
-            Node(
-                id=f"node-{index:02d}",
-                label=f"Operational topic {index}",
-                type="Concept",
-                chunk_ids=["graph-heavy"],
-            )
-            for index in range(10)
-        ],
+        )
+        for index in range(10)
     ]
     graph = KnowledgeGraph(nodes=nodes, edges=[])
 

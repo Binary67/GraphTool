@@ -1,6 +1,7 @@
 import json
 import math
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from graphtool.chunking.types import Chunk
@@ -18,8 +19,19 @@ from graphtool.retrieval.types import (
     RetrievalResult,
 )
 
-BM25_CHUNK_WEIGHT = 1.0
+PRIMARY_LABEL_BM25_WEIGHT = 2.0
+ALIAS_BM25_WEIGHT = 1.5
+CONTENT_BM25_WEIGHT = 1.0
+METADATA_BM25_WEIGHT = 0.5
 SEMANTIC_CHUNK_WEIGHT = 1.0
+
+
+@dataclass(frozen=True)
+class _ChunkSearchFields:
+    primary_labels: str
+    aliases: str
+    content: str
+    metadata: str
 
 
 def retrieve_context(
@@ -61,21 +73,43 @@ def _rank_chunks(
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
 ) -> list[tuple[Chunk, float]]:
+    search_fields_by_chunk = _search_fields_by_chunk(
+        graph,
+        chunks_by_id,
+        nodes_by_id,
+    )
     searchable_text_by_chunk = _searchable_text_by_chunk(
         graph,
         chunks_by_id,
         nodes_by_id,
     )
-    documents = [
-        BM25Document(id=chunk.id, text=searchable_text_by_chunk[chunk.id])
-        for chunk in chunks_by_id.values()
-    ]
-    index = BM25Index(documents)
-    bm25_scores = _normalize_scores(
+    primary_label_scores = _bm25_scores(
+        query,
         {
-            document.id: score
-            for document, score in index.rank(query)
-        }
+            chunk_id: fields.primary_labels
+            for chunk_id, fields in search_fields_by_chunk.items()
+        },
+    )
+    alias_scores = _bm25_scores(
+        query,
+        {
+            chunk_id: fields.aliases
+            for chunk_id, fields in search_fields_by_chunk.items()
+        },
+    )
+    content_scores = _bm25_scores(
+        query,
+        {
+            chunk_id: fields.content
+            for chunk_id, fields in search_fields_by_chunk.items()
+        },
+    )
+    metadata_scores = _bm25_scores(
+        query,
+        {
+            chunk_id: fields.metadata
+            for chunk_id, fields in search_fields_by_chunk.items()
+        },
     )
     semantic_scores = _normalize_scores(
         _semantic_chunk_scores(
@@ -89,7 +123,10 @@ def _rank_chunks(
     ranked = []
     for chunk in chunks_by_id.values():
         score = (
-            bm25_scores.get(chunk.id, 0.0) * BM25_CHUNK_WEIGHT
+            primary_label_scores.get(chunk.id, 0.0) * PRIMARY_LABEL_BM25_WEIGHT
+            + alias_scores.get(chunk.id, 0.0) * ALIAS_BM25_WEIGHT
+            + content_scores.get(chunk.id, 0.0) * CONTENT_BM25_WEIGHT
+            + metadata_scores.get(chunk.id, 0.0) * METADATA_BM25_WEIGHT
             + semantic_scores.get(chunk.id, 0.0) * SEMANTIC_CHUNK_WEIGHT
         )
         if score > 0:
@@ -97,6 +134,100 @@ def _rank_chunks(
 
     ranked.sort(key=lambda item: (-item[1], item[0].index, item[0].id))
     return ranked
+
+
+def _bm25_scores(query: str, text_by_chunk: dict[str, str]) -> dict[str, float]:
+    index = BM25Index(
+        [
+            BM25Document(id=chunk_id, text=text)
+            for chunk_id, text in text_by_chunk.items()
+        ]
+    )
+    return _normalize_scores(
+        {
+            document.id: score
+            for document, score in index.rank(query)
+        }
+    )
+
+
+def _search_fields_by_chunk(
+    graph: KnowledgeGraph,
+    chunks_by_id: dict[str, Chunk],
+    nodes_by_id: dict[str, Node],
+) -> dict[str, _ChunkSearchFields]:
+    nodes_by_chunk: dict[str, list[Node]] = {}
+    for node in sorted(graph.nodes, key=lambda item: item.id):
+        for chunk_id in node.chunk_ids:
+            if chunk_id in chunks_by_id:
+                nodes_by_chunk.setdefault(chunk_id, []).append(node)
+
+    edges_by_chunk: dict[str, list[Edge]] = {}
+    for edge in sorted(graph.edges, key=lambda item: item.id):
+        if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
+            continue
+        for chunk_id in edge.chunk_ids:
+            if chunk_id in chunks_by_id:
+                edges_by_chunk.setdefault(chunk_id, []).append(edge)
+
+    fields_by_chunk = {}
+    for chunk in chunks_by_id.values():
+        nodes = nodes_by_chunk.get(chunk.id, [])
+        edges = edges_by_chunk.get(chunk.id, [])
+        fields_by_chunk[chunk.id] = _ChunkSearchFields(
+            primary_labels="\n".join(
+                _unique_search_text(node.label for node in nodes)
+            ),
+            aliases="\n".join(
+                _unique_search_text(
+                    alias
+                    for node in nodes
+                    for alias in node.aliases
+                )
+            ),
+            content=chunk.text,
+            metadata="\n".join(
+                _unique_search_text(
+                    [
+                        *chunk.heading_path,
+                        *(node.type for node in nodes),
+                        *(
+                            node.suggested_type
+                            for node in nodes
+                            if node.suggested_type is not None
+                        ),
+                        *(
+                            _properties_text(node.properties)
+                            for node in nodes
+                            if node.properties
+                        ),
+                        *(
+                            _relationship_metadata_text(edge)
+                            for edge in edges
+                        ),
+                    ]
+                )
+            ),
+        )
+    return fields_by_chunk
+
+
+def _relationship_metadata_text(edge: Edge) -> str:
+    if not edge.properties:
+        return edge.label
+    return f"{edge.label} | properties: {_properties_text(edge.properties)}"
+
+
+def _unique_search_text(values: Iterable[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for value in values:
+        normalized = " ".join(value.casefold().split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(value)
+    return unique
 
 
 def _attach_graph_annotations(

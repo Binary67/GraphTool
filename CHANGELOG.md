@@ -6,12 +6,41 @@
 
 - Added exact document content hashing and per-source node and edge provenance.
 - Added incremental document synchronization for additions, changes, and deletions.
-- Added source-filtered knowledge graph views.
+- Added source-filtered knowledge graph projections.
+- Added semantic entity resolution using embedding candidates and LLM-assisted
+  merge decisions when combining document graphs.
+- Added cached graph and chunk embeddings with batched embedding requests.
+- Added JSONL audit logging for generated edges that reference missing nodes.
+- Added a canonical node taxonomy with persisted suggestions for unclassified
+  node types.
+- Added hybrid BM25 and semantic chunk retrieval.
+- Added a LangGraph-based question-answering workflow with source reporting and
+  retrieval traces.
+- Added centralized runtime, path, client, and store construction.
 
 ### Changed
 
-- Updated graph, chunk, embedding, taxonomy, and visualization caches when
-  documents change.
+- Replaced the single Azure OpenAI model configuration with separate flagship,
+  fast, and embedding deployment settings.
+- Added configuration for embedding batch size and the entity-resolution
+  candidate similarity threshold.
+- Improved graph extraction to exclude document-structure and metadata nodes,
+  resolve repeated entities, and deduplicate relationships.
+- Kept stored graphs, chunks, embeddings, taxonomy suggestions, and generated
+  visualizations synchronized with document additions, updates, and deletions.
+- Updated the main workflow to synchronize documents, export visualizations,
+  and answer questions through the shared runtime.
+
+### Fixed
+
+- Scoped generated node references to their source chunks to prevent collisions.
+- Validated unique extracted node references and retried invalid structured LLM
+  responses once.
+
+### Removed
+
+- Removed the single-text `EmbeddingClient.embed_text` API in favor of batched
+  `embed_texts` calls.
 
 ## [0.6.0]
 
