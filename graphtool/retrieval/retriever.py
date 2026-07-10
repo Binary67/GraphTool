@@ -34,6 +34,37 @@ class _ChunkSearchFields:
     metadata: str
 
 
+@dataclass(frozen=True)
+class _ChunkGraphIndex:
+    nodes_by_chunk: dict[str, list[Node]]
+    edges_by_chunk: dict[str, list[Edge]]
+
+
+def _build_chunk_graph_index(
+    graph: KnowledgeGraph,
+    chunks_by_id: dict[str, Chunk],
+    nodes_by_id: dict[str, Node],
+) -> _ChunkGraphIndex:
+    nodes_by_chunk: dict[str, list[Node]] = {}
+    for node in sorted(graph.nodes, key=lambda item: item.id):
+        for chunk_id in node.chunk_ids:
+            if chunk_id in chunks_by_id:
+                nodes_by_chunk.setdefault(chunk_id, []).append(node)
+
+    edges_by_chunk: dict[str, list[Edge]] = {}
+    for edge in sorted(graph.edges, key=lambda item: item.id):
+        if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
+            continue
+        for chunk_id in edge.chunk_ids:
+            if chunk_id in chunks_by_id:
+                edges_by_chunk.setdefault(chunk_id, []).append(edge)
+
+    return _ChunkGraphIndex(
+        nodes_by_chunk=nodes_by_chunk,
+        edges_by_chunk=edges_by_chunk,
+    )
+
+
 def retrieve_context(
     query: str,
     graph: KnowledgeGraph,
@@ -45,15 +76,16 @@ def retrieve_context(
 ) -> RetrievalResult:
     chunks_by_id = {chunk.id: chunk for chunk in chunks}
     nodes_by_id = {node.id: node for node in graph.nodes}
+    index = _build_chunk_graph_index(graph, chunks_by_id, nodes_by_id)
     ranked_chunks = _rank_chunks(
         query,
-        graph,
         chunks_by_id,
+        index,
         nodes_by_id,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
     )[:top_chunks]
-    chunk_hits = _attach_graph_annotations(ranked_chunks, graph, nodes_by_id)
+    chunk_hits = _attach_graph_annotations(ranked_chunks, index, nodes_by_id)
     sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
 
     return RetrievalResult(
@@ -66,22 +98,16 @@ def retrieve_context(
 
 def _rank_chunks(
     query: str,
-    graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
+    index: _ChunkGraphIndex,
     nodes_by_id: dict[str, Node],
     *,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
 ) -> list[tuple[Chunk, float]]:
-    search_fields_by_chunk = _search_fields_by_chunk(
-        graph,
-        chunks_by_id,
-        nodes_by_id,
-    )
+    search_fields_by_chunk = _search_fields_by_chunk(chunks_by_id, index)
     searchable_text_by_chunk = _searchable_text_by_chunk(
-        graph,
-        chunks_by_id,
-        nodes_by_id,
+        chunks_by_id, index, nodes_by_id
     )
     primary_label_scores = _bm25_scores(
         query,
@@ -152,28 +178,13 @@ def _bm25_scores(query: str, text_by_chunk: dict[str, str]) -> dict[str, float]:
 
 
 def _search_fields_by_chunk(
-    graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
-    nodes_by_id: dict[str, Node],
+    index: _ChunkGraphIndex,
 ) -> dict[str, _ChunkSearchFields]:
-    nodes_by_chunk: dict[str, list[Node]] = {}
-    for node in sorted(graph.nodes, key=lambda item: item.id):
-        for chunk_id in node.chunk_ids:
-            if chunk_id in chunks_by_id:
-                nodes_by_chunk.setdefault(chunk_id, []).append(node)
-
-    edges_by_chunk: dict[str, list[Edge]] = {}
-    for edge in sorted(graph.edges, key=lambda item: item.id):
-        if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
-            continue
-        for chunk_id in edge.chunk_ids:
-            if chunk_id in chunks_by_id:
-                edges_by_chunk.setdefault(chunk_id, []).append(edge)
-
     fields_by_chunk = {}
     for chunk in chunks_by_id.values():
-        nodes = nodes_by_chunk.get(chunk.id, [])
-        edges = edges_by_chunk.get(chunk.id, [])
+        nodes = index.nodes_by_chunk.get(chunk.id, [])
+        edges = index.edges_by_chunk.get(chunk.id, [])
         fields_by_chunk[chunk.id] = _ChunkSearchFields(
             primary_labels="\n".join(
                 _unique_search_text(node.label for node in nodes)
@@ -232,37 +243,24 @@ def _unique_search_text(values: Iterable[str]) -> list[str]:
 
 def _attach_graph_annotations(
     ranked_chunks: Sequence[tuple[Chunk, float]],
-    graph: KnowledgeGraph,
+    index: _ChunkGraphIndex,
     nodes_by_id: dict[str, Node],
 ) -> list[ChunkHit]:
-    selected_chunk_ids = {chunk.id for chunk, _ in ranked_chunks}
-    nodes_by_chunk: dict[str, list[Node]] = {}
-    for node in sorted(graph.nodes, key=lambda item: item.id):
-        for chunk_id in node.chunk_ids:
-            if chunk_id in selected_chunk_ids:
-                nodes_by_chunk.setdefault(chunk_id, []).append(node)
-
     relationships_by_chunk: dict[str, list[ChunkRelationship]] = {}
-    for edge in sorted(graph.edges, key=lambda item: item.id):
-        source_node = nodes_by_id.get(edge.source)
-        target_node = nodes_by_id.get(edge.target)
-        if source_node is None or target_node is None:
-            continue
-
-        relationship = ChunkRelationship(
-            edge=edge,
-            source_node=source_node,
-            target_node=target_node,
-        )
-        for chunk_id in edge.chunk_ids:
-            if chunk_id in selected_chunk_ids:
-                relationships_by_chunk.setdefault(chunk_id, []).append(relationship)
+    for chunk, _ in ranked_chunks:
+        for edge in index.edges_by_chunk.get(chunk.id, []):
+            relationship = ChunkRelationship(
+                edge=edge,
+                source_node=nodes_by_id[edge.source],
+                target_node=nodes_by_id[edge.target],
+            )
+            relationships_by_chunk.setdefault(chunk.id, []).append(relationship)
 
     return [
         ChunkHit(
             chunk=chunk,
             score=score,
-            linked_nodes=nodes_by_chunk.get(chunk.id, []),
+            linked_nodes=index.nodes_by_chunk.get(chunk.id, []),
             linked_relationships=relationships_by_chunk.get(chunk.id, []),
         )
         for chunk, score in ranked_chunks
@@ -270,29 +268,15 @@ def _attach_graph_annotations(
 
 
 def _searchable_text_by_chunk(
-    graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
+    index: _ChunkGraphIndex,
     nodes_by_id: dict[str, Node],
 ) -> dict[str, str]:
-    nodes_by_chunk: dict[str, list[Node]] = {}
-    for node in sorted(graph.nodes, key=lambda item: item.id):
-        for chunk_id in node.chunk_ids:
-            if chunk_id in chunks_by_id:
-                nodes_by_chunk.setdefault(chunk_id, []).append(node)
-
-    edges_by_chunk: dict[str, list[Edge]] = {}
-    for edge in sorted(graph.edges, key=lambda item: item.id):
-        if edge.source not in nodes_by_id or edge.target not in nodes_by_id:
-            continue
-        for chunk_id in edge.chunk_ids:
-            if chunk_id in chunks_by_id:
-                edges_by_chunk.setdefault(chunk_id, []).append(edge)
-
     return {
         chunk.id: _chunk_text(
             chunk,
-            nodes_by_chunk.get(chunk.id, []),
-            edges_by_chunk.get(chunk.id, []),
+            index.nodes_by_chunk.get(chunk.id, []),
+            index.edges_by_chunk.get(chunk.id, []),
             nodes_by_id,
         )
         for chunk in chunks_by_id.values()
