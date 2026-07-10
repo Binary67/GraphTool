@@ -30,6 +30,34 @@ class JsonChunkStore:
             if chunk_id in chunks_by_id
         ]
 
+    def load_neighborhood(
+        self,
+        source: str,
+        chunk_id: str,
+    ) -> tuple[Chunk | None, Chunk, Chunk | None]:
+        try:
+            chunks = sorted(self.load(source), key=lambda chunk: chunk.index)
+        except FileNotFoundError:
+            chunks = []
+
+        position = next(
+            (
+                index
+                for index, chunk in enumerate(chunks)
+                if chunk.id == chunk_id
+            ),
+            None,
+        )
+        if position is None:
+            raise ValueError(
+                f"Chunk {chunk_id!r} was not found in source {source!r}."
+            )
+
+        previous = chunks[position - 1] if position > 0 else None
+        current = chunks[position]
+        next_chunk = chunks[position + 1] if position + 1 < len(chunks) else None
+        return previous, current, next_chunk
+
     def delete(self, source: str) -> None:
         self._path_for(source).unlink(missing_ok=True)
 

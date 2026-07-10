@@ -21,6 +21,13 @@ def _chunks() -> list[Chunk]:
             text="## Details\nMore text.",
             heading_path=["Intro", "Details"],
         ),
+        Chunk(
+            id="doc-chunk-0002",
+            source="doc.md",
+            index=2,
+            text="## Ending\nFinal text.",
+            heading_path=["Intro", "Ending"],
+        ),
     ]
 
 
@@ -60,6 +67,50 @@ def test_load_by_ids_returns_requested_order_and_filters_missing_ids(tmp_path):
     )
 
     assert loaded == [chunks[1], chunks[0]]
+
+
+@pytest.mark.parametrize(
+    ("chunk_id", "expected_positions"),
+    [
+        ("doc-chunk-0000", (None, 0, 1)),
+        ("doc-chunk-0001", (0, 1, 2)),
+        ("doc-chunk-0002", (1, 2, None)),
+    ],
+)
+def test_load_neighborhood_handles_first_middle_and_last_chunks(
+    tmp_path,
+    chunk_id,
+    expected_positions,
+):
+    store = JsonChunkStore(tmp_path)
+    store.save("doc.md", _chunks())
+
+    neighborhood = store.load_neighborhood("doc.md", chunk_id)
+
+    assert tuple(
+        chunk.index if chunk is not None else None
+        for chunk in neighborhood
+    ) == expected_positions
+
+
+@pytest.mark.parametrize(
+    ("source", "chunk_id"),
+    [
+        ("doc.md", "other-chunk-0000"),
+        ("other.md", "doc-chunk-0001"),
+    ],
+)
+def test_load_neighborhood_rejects_invalid_source_chunk_combinations(
+    tmp_path,
+    source,
+    chunk_id,
+):
+    store = JsonChunkStore(tmp_path)
+    store.save("doc.md", _chunks())
+    store.save("other.md", [])
+
+    with pytest.raises(ValueError, match="was not found in source"):
+        store.load_neighborhood(source, chunk_id)
 
 
 def test_save_uses_source_path_in_filename(tmp_path):

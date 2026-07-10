@@ -4,7 +4,12 @@ from graphtool.agents.answer_questions.runner import (
     MAX_AGENT_ITERATIONS,
     answer_question,
 )
-from graphtool.agents.answer_questions.types import RetrievedContext
+from graphtool.agents.answer_questions.types import (
+    ChunkNeighborhood,
+    ChunkReference,
+    NeighborhoodChunk,
+    RetrievedContext,
+)
 from graphtool.llm.config import AzureOpenAIConfig
 
 
@@ -17,17 +22,43 @@ class FakeGraph:
         first = RetrievedContext(
             query="GraphTool agents",
             sources=["docs/agents.md"],
+            chunk_references=[
+                ChunkReference(
+                    chunk_id="agents-chunk-0001",
+                    source="docs/agents.md",
+                    index=1,
+                    heading_path=["Agents"],
+                )
+            ],
             context_text="Agent context",
+        )
+        neighborhood = ChunkNeighborhood(
+            source="docs/agents.md",
+            chunk_id="agents-chunk-0001",
+            previous=None,
+            current=NeighborhoodChunk(
+                chunk_id="agents-chunk-0001",
+                source="docs/agents.md",
+                index=1,
+                heading_path=["Agents"],
+                text="Agent context",
+            ),
+            next=None,
         )
         second = RetrievedContext(
             query="GraphTool retrieval",
             sources=["docs/retrieval.md", "docs/agents.md"],
+            chunk_references=[],
             context_text="Retrieval context",
         )
         return {
             "messages": [
                 ToolMessage(content=first.model_dump_json(), tool_call_id="call-1"),
-                ToolMessage(content=second.model_dump_json(), tool_call_id="call-2"),
+                ToolMessage(
+                    content=neighborhood.model_dump_json(),
+                    tool_call_id="call-2",
+                ),
+                ToolMessage(content=second.model_dump_json(), tool_call_id="call-3"),
                 AIMessage(
                     content=(
                         "GraphTool can answer with an agent using retrieval "
@@ -61,8 +92,10 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
     fake_runtime = FakeRuntime()
     fake_model = object()
     fake_tool = object()
+    fake_neighborhood_tool = object()
     runtime_calls = []
     tool_calls = []
+    graph_calls = []
     monkeypatch.setattr(
         "graphtool.agents.answer_questions.runner.make_answer_chat_model",
         lambda config: fake_model,
@@ -85,8 +118,17 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
         fake_make_tool,
     )
     monkeypatch.setattr(
+        "graphtool.agents.answer_questions.runner.make_get_chunk_neighborhood_tool",
+        lambda chunk_store: fake_neighborhood_tool,
+    )
+
+    def fake_build_graph(model, tools):
+        graph_calls.append((model, tools))
+        return fake_graph
+
+    monkeypatch.setattr(
         "graphtool.agents.answer_questions.runner.build_answer_question_graph",
-        lambda model, tools: fake_graph,
+        fake_build_graph,
     )
     config = _config()
 
@@ -114,6 +156,9 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
                 "chunk_embedding_store": fake_runtime.chunk_embedding_store,
             },
         )
+    ]
+    assert graph_calls == [
+        (fake_model, [fake_tool, fake_neighborhood_tool])
     ]
     assert fake_graph.calls == [
         (

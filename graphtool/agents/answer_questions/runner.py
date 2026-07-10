@@ -1,15 +1,30 @@
 import json
 from collections.abc import Iterable
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field, TypeAdapter
 
 from graphtool.agents.answer_questions.graph import build_answer_question_graph
 from graphtool.agents.answer_questions.model import make_answer_chat_model
-from graphtool.agents.answer_questions.tools import make_retrieve_knowledge_context_tool
-from graphtool.agents.answer_questions.types import AnswerResult, RetrievedContext
+from graphtool.agents.answer_questions.tools import (
+    make_get_chunk_neighborhood_tool,
+    make_retrieve_knowledge_context_tool,
+)
+from graphtool.agents.answer_questions.types import (
+    AnswerResult,
+    ChunkNeighborhood,
+    RetrievedContext,
+)
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.runtime import create_runtime
 
 MAX_AGENT_ITERATIONS = 6
+_TOOL_RESULT_ADAPTER = TypeAdapter(
+    Annotated[
+        RetrievedContext | ChunkNeighborhood,
+        Field(discriminator="type"),
+    ]
+)
 
 
 def answer_question(
@@ -18,14 +33,15 @@ def answer_question(
 ) -> AnswerResult:
     runtime = create_runtime(config)
     model = make_answer_chat_model(config)
-    tool = make_retrieve_knowledge_context_tool(
+    search_tool = make_retrieve_knowledge_context_tool(
         runtime.graph_store,
         runtime.chunk_store,
         knowledge_base_store=runtime.knowledge_base_store,
         embedding_client=runtime.fast_llm,
         chunk_embedding_store=runtime.chunk_embedding_store,
     )
-    graph = build_answer_question_graph(model, [tool])
+    neighborhood_tool = make_get_chunk_neighborhood_tool(runtime.chunk_store)
+    graph = build_answer_question_graph(model, [search_tool, neighborhood_tool])
     result = graph.invoke(
         {"messages": [{"role": "user", "content": question}]},
         config={"recursion_limit": MAX_AGENT_ITERATIONS},
@@ -55,9 +71,11 @@ def _extract_retrievals(messages: list[Any]) -> list[RetrievedContext]:
         except json.JSONDecodeError:
             continue
         try:
-            retrievals.append(RetrievedContext.model_validate(data))
+            result = _TOOL_RESULT_ADAPTER.validate_python(data)
         except ValueError:
             continue
+        if isinstance(result, RetrievedContext):
+            retrievals.append(result)
     return retrievals
 
 

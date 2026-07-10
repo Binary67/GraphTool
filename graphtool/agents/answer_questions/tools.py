@@ -1,8 +1,14 @@
 from langchain_core.tools import BaseTool, StructuredTool
 
 from graphtool import corpus
-from graphtool.agents.answer_questions.types import RetrievedContext
+from graphtool.agents.answer_questions.types import (
+    ChunkNeighborhood,
+    ChunkReference,
+    NeighborhoodChunk,
+    RetrievedContext,
+)
 from graphtool.chunking.json_store import JsonChunkStore
+from graphtool.chunking.types import Chunk
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
@@ -31,6 +37,15 @@ def make_retrieve_knowledge_context_tool(
         return RetrievedContext(
             query=result.query,
             sources=result.sources,
+            chunk_references=[
+                ChunkReference(
+                    chunk_id=hit.chunk.id,
+                    source=hit.chunk.source,
+                    index=hit.chunk.index,
+                    heading_path=hit.chunk.heading_path,
+                )
+                for hit in result.chunks
+            ],
             context_text=result.context_text,
         ).model_dump_json()
 
@@ -38,8 +53,64 @@ def make_retrieve_knowledge_context_tool(
         retrieve_knowledge_context,
         name="retrieve_knowledge_context",
         description=(
-            "Search GraphTool's knowledge graph and document evidence. "
+            "Search GraphTool's knowledge graph and document evidence. This must "
+            "be the first retrieval tool used for a question. "
             "Input should be a focused natural-language search query. "
-            "Returns JSON with query, sources, and context_text."
+            "Returns typed JSON with source paths, structured chunk references, "
+            "and evidence text."
         ),
+    )
+
+
+def get_chunk_neighborhood(
+    chunk_store: JsonChunkStore,
+    source: str,
+    chunk_id: str,
+) -> ChunkNeighborhood:
+    previous, current, next_chunk = chunk_store.load_neighborhood(source, chunk_id)
+    return ChunkNeighborhood(
+        source=source,
+        chunk_id=chunk_id,
+        previous=(
+            _neighborhood_chunk(previous)
+            if previous is not None
+            else None
+        ),
+        current=_neighborhood_chunk(current),
+        next=(
+            _neighborhood_chunk(next_chunk)
+            if next_chunk is not None
+            else None
+        ),
+    )
+
+
+def make_get_chunk_neighborhood_tool(chunk_store: JsonChunkStore) -> BaseTool:
+    def lookup(source: str, chunk_id: str) -> str:
+        """Return the chunks immediately before and after a searched chunk."""
+        return get_chunk_neighborhood(
+            chunk_store,
+            source,
+            chunk_id,
+        ).model_dump_json()
+
+    return StructuredTool.from_function(
+        lookup,
+        name="get_chunk_neighborhood",
+        description=(
+            "Return the previous, current, and next chunks from one source as "
+            "typed JSON. Use only a source and chunk_id pair from a prior "
+            "retrieve_knowledge_context result, and only when that passage is "
+            "incomplete or needs adjacent document context."
+        ),
+    )
+
+
+def _neighborhood_chunk(chunk: Chunk) -> NeighborhoodChunk:
+    return NeighborhoodChunk(
+        chunk_id=chunk.id,
+        source=chunk.source,
+        index=chunk.index,
+        heading_path=chunk.heading_path,
+        text=chunk.text,
     )

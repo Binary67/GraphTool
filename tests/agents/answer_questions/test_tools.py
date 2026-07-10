@@ -1,7 +1,12 @@
 import json
 
-from graphtool.agents.answer_questions.tools import make_retrieve_knowledge_context_tool
-from graphtool.retrieval.types import RetrievalResult
+from graphtool.agents.answer_questions.tools import (
+    make_get_chunk_neighborhood_tool,
+    make_retrieve_knowledge_context_tool,
+)
+from graphtool.chunking.json_store import JsonChunkStore
+from graphtool.chunking.types import Chunk
+from graphtool.retrieval.types import ChunkHit, RetrievalResult
 
 
 def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch):
@@ -12,7 +17,20 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
         return RetrievalResult(
             query=query,
             sources=["docs/guide.md"],
-            chunks=[],
+            chunks=[
+                ChunkHit(
+                    chunk=Chunk(
+                        id="guide-chunk-0002",
+                        source="docs/guide.md",
+                        index=2,
+                        text="Relevant context",
+                        heading_path=["Guide", "Agents"],
+                    ),
+                    score=1.0,
+                    linked_nodes=[],
+                    linked_relationships=[],
+                )
+            ],
             context_text="Relevant context",
         )
 
@@ -36,8 +54,17 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
     output = tool.invoke({"query": "What does GraphTool use?"})
 
     assert json.loads(output) == {
+        "type": "search",
         "query": "What does GraphTool use?",
         "sources": ["docs/guide.md"],
+        "chunk_references": [
+            {
+                "chunk_id": "guide-chunk-0002",
+                "source": "docs/guide.md",
+                "index": 2,
+                "heading_path": ["Guide", "Agents"],
+            }
+        ],
         "context_text": "Relevant context",
     }
     assert calls == [
@@ -53,3 +80,34 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
             },
         )
     ]
+
+
+def test_get_chunk_neighborhood_tool_returns_typed_json(tmp_path):
+    store = JsonChunkStore(tmp_path)
+    chunks = [
+        Chunk(
+            id=f"guide-chunk-{index:04d}",
+            source="docs/guide.md",
+            index=index,
+            text=f"Part {index}",
+            heading_path=["Guide"],
+        )
+        for index in range(3)
+    ]
+    store.save("docs/guide.md", chunks)
+    tool = make_get_chunk_neighborhood_tool(store)
+
+    output = tool.invoke(
+        {
+            "source": "docs/guide.md",
+            "chunk_id": "guide-chunk-0001",
+        }
+    )
+
+    data = json.loads(output)
+    assert data["type"] == "chunk_neighborhood"
+    assert data["source"] == "docs/guide.md"
+    assert data["chunk_id"] == "guide-chunk-0001"
+    assert data["previous"]["chunk_id"] == "guide-chunk-0000"
+    assert data["current"]["chunk_id"] == "guide-chunk-0001"
+    assert data["next"]["chunk_id"] == "guide-chunk-0002"
