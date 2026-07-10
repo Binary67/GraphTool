@@ -90,7 +90,7 @@ def test_resolver_merges_normalized_alias_match_without_llm():
             KnowledgeGraph(
                 nodes=[
                     Node(
-                        id="openai",
+                        id="chunk-1::node-0001",
                         label="OpenAI",
                         type="Organization",
                         aliases=["OpenAI organization"],
@@ -101,7 +101,7 @@ def test_resolver_merges_normalized_alias_match_without_llm():
             KnowledgeGraph(
                 nodes=[
                     Node(
-                        id="openai-org",
+                        id="chunk-2::node-0001",
                         label="openai organization",
                         type="Organization",
                     )
@@ -112,7 +112,7 @@ def test_resolver_merges_normalized_alias_match_without_llm():
     )
 
     assert len(graph.nodes) == 1
-    assert graph.nodes[0].id == "openai"
+    assert graph.nodes[0].id == "chunk-1::node-0001"
     assert llm.calls == []
     assert embedding.calls == []
 
@@ -147,7 +147,7 @@ def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
         [
             EntityResolutionDecision(
                 decision="merge",
-                target_node_id="openai",
+                target_node_id="chunk-1::node-0001",
                 confidence=0.95,
                 aliases_to_add=["OpenAI org"],
             )
@@ -166,14 +166,22 @@ def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
         [
             KnowledgeGraph(
                 nodes=[
-                    Node(id="openai", label="OpenAI", type="Organization"),
-                    Node(id="chatgpt", label="ChatGPT", type="Product"),
+                    Node(
+                        id="chunk-1::node-0001",
+                        label="OpenAI",
+                        type="Organization",
+                    ),
+                    Node(
+                        id="chunk-1::node-0002",
+                        label="ChatGPT",
+                        type="Product",
+                    ),
                 ],
                 edges=[
                     Edge(
                         id="edge-a",
-                        source="openai",
-                        target="chatgpt",
+                        source="chunk-1::node-0001",
+                        target="chunk-1::node-0002",
                         label="develops",
                         chunk_ids=["chunk-1"],
                     )
@@ -182,17 +190,21 @@ def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
             KnowledgeGraph(
                 nodes=[
                     Node(
-                        id="openai-organization",
+                        id="chunk-2::node-0001",
                         label="OpenAI organization",
                         type="Organization",
                     ),
-                    Node(id="chatgpt", label="ChatGPT", type="Product"),
+                    Node(
+                        id="chunk-2::node-0002",
+                        label="ChatGPT",
+                        type="Product",
+                    ),
                 ],
                 edges=[
                     Edge(
                         id="edge-b",
-                        source="openai-organization",
-                        target="chatgpt",
+                        source="chunk-2::node-0001",
+                        target="chunk-2::node-0002",
                         label="develops",
                         chunk_ids=["chunk-2"],
                     )
@@ -201,12 +213,17 @@ def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
         ]
     )
 
-    assert {node.id for node in graph.nodes} == {"openai", "chatgpt"}
-    openai = next(node for node in graph.nodes if node.id == "openai")
+    assert {node.id for node in graph.nodes} == {
+        "chunk-1::node-0001",
+        "chunk-1::node-0002",
+    }
+    openai = next(
+        node for node in graph.nodes if node.id == "chunk-1::node-0001"
+    )
     assert openai.aliases == ["OpenAI organization", "OpenAI org"]
     assert len(graph.edges) == 1
-    assert graph.edges[0].source == "openai"
-    assert graph.edges[0].target == "chatgpt"
+    assert graph.edges[0].source == "chunk-1::node-0001"
+    assert graph.edges[0].target == "chunk-1::node-0002"
     assert graph.edges[0].id == "edge-0001"
     assert graph.edges[0].chunk_ids == ["chunk-1", "chunk-2"]
 

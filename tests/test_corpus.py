@@ -12,6 +12,11 @@ from graphtool.corpus import (
     rebuild_knowledge_base,
     search_knowledge_base,
 )
+from graphtool.graph.generator import (
+    _ExtractedEdge,
+    _ExtractedKnowledgeGraph,
+    _ExtractedNode,
+)
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision
@@ -24,7 +29,7 @@ T = TypeVar("T")
 
 
 class FakeLLM:
-    def __init__(self, responses: list[KnowledgeGraph]) -> None:
+    def __init__(self, responses: list[_ExtractedKnowledgeGraph]) -> None:
         self.responses = responses
         self.calls: list[tuple[list[LLMMessage], type]] = []
 
@@ -41,7 +46,7 @@ class FakeSemanticLLM:
 
     def __init__(
         self,
-        responses: list[KnowledgeGraph],
+        responses: list[_ExtractedKnowledgeGraph],
         decisions: list[EntityResolutionDecision],
         vectors: dict[str, list[float]],
     ) -> None:
@@ -109,6 +114,13 @@ def _chunk(source: str, text: str, heading: str) -> Chunk:
         text=text,
         heading_path=[heading],
     )
+
+
+def _extracted_graph(
+    nodes: list[_ExtractedNode],
+    edges: list[_ExtractedEdge] | None = None,
+) -> _ExtractedKnowledgeGraph:
+    return _ExtractedKnowledgeGraph(nodes=nodes, edges=edges or [])
 
 
 def _graph(source: str, chunk: Chunk, node_id: str, label: str) -> KnowledgeGraph:
@@ -236,9 +248,8 @@ def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
     )
     fake = FakeLLM(
         [
-            KnowledgeGraph(
-                nodes=[Node(id="pending", label="Pending", type="Concept")],
-                edges=[],
+            _extracted_graph(
+                nodes=[_ExtractedNode(ref="pending", label="Pending", type="concept")]
             )
         ]
     )
@@ -261,7 +272,7 @@ def test_ingest_unprocessed_documents_skips_processed_sources(tmp_path):
     assert chunk_store.load("docs/pending.md")
 
 
-def test_ingest_unprocessed_documents_updates_cached_knowledge_base_with_exact_dedupe(
+def test_ingest_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
     tmp_path,
 ):
     graph_store = JsonGraphStore(tmp_path / "graphs")
@@ -272,16 +283,20 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_with_exact_d
     rebuild_knowledge_base(graph_store, knowledge_base_store)
     fake = FakeLLM(
         [
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(id="graphtool", label="GraphTool", type="Project"),
-                    Node(id="azure-openai", label="Azure OpenAI", type="Service"),
+                    _ExtractedNode(ref="graphtool", label="GraphTool", type="tool"),
+                    _ExtractedNode(
+                        ref="azure-openai",
+                        label="Azure OpenAI",
+                        type="service",
+                    ),
                 ],
                 edges=[
-                    Edge(
+                    _ExtractedEdge(
                         id="llm-edge",
-                        source="graphtool",
-                        target="azure-openai",
+                        source_ref="graphtool",
+                        target_ref="azure-openai",
                         label="uses",
                     )
                 ],
@@ -300,11 +315,65 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_with_exact_d
     )
 
     graph = knowledge_base_store.load()
-    assert len(graph.nodes) == 2
-    assert graph.nodes[0].chunk_ids == ["existing-chunk-0000", new_chunk_id]
-    assert len(graph.edges) == 1
-    assert graph.edges[0].id == "edge-0001"
-    assert graph.edges[0].chunk_ids == ["existing-chunk-0000", new_chunk_id]
+    assert {node.id for node in graph.nodes} == {
+        "graphtool",
+        "azure-openai",
+        f"{new_chunk_id}::node-0001",
+        f"{new_chunk_id}::node-0002",
+    }
+    assert {(edge.source, edge.target, edge.label) for edge in graph.edges} == {
+        ("graphtool", "azure-openai", "uses"),
+        (
+            f"{new_chunk_id}::node-0001",
+            f"{new_chunk_id}::node-0002",
+            "uses",
+        ),
+    }
+
+
+def test_ingest_scopes_reused_node_refs_across_documents(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    fake = FakeLLM(
+        [
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(ref="node-1", label="OpenAI", type="organization")
+                ]
+            ),
+            _extracted_graph(
+                nodes=[
+                    _ExtractedNode(
+                        ref="node-1",
+                        label="Anthropic",
+                        type="organization",
+                    )
+                ]
+            ),
+        ]
+    )
+    first_source = "docs/openai.md"
+    second_source = "docs/anthropic.md"
+    first_chunk_id = f"{source_key(first_source)}-chunk-0000"
+    second_chunk_id = f"{source_key(second_source)}-chunk-0000"
+
+    ingest_unprocessed_documents(
+        {
+            first_source: "# OpenAI\nAI company.",
+            second_source: "# Anthropic\nAI company.",
+        },
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    graph = knowledge_base_store.load()
+    assert {node.id: node.label for node in graph.nodes} == {
+        f"{first_chunk_id}::node-0001": "OpenAI",
+        f"{second_chunk_id}::node-0001": "Anthropic",
+    }
 
 
 def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically(
@@ -351,20 +420,24 @@ def test_ingest_unprocessed_documents_updates_cached_knowledge_base_semantically
     knowledge_base_store.save(existing_graph)
     fake = FakeSemanticLLM(
         responses=[
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(
-                        id="openai-organization",
+                    _ExtractedNode(
+                        ref="openai-organization",
                         label="OpenAI organization",
-                        type="Organization",
+                        type="organization",
                     ),
-                    Node(id="chatgpt", label="ChatGPT", type="Product"),
+                    _ExtractedNode(
+                        ref="chatgpt",
+                        label="ChatGPT",
+                        type="product",
+                    ),
                 ],
                 edges=[
-                    Edge(
+                    _ExtractedEdge(
                         id="new-edge",
-                        source="openai-organization",
-                        target="chatgpt",
+                        source_ref="openai-organization",
+                        target_ref="chatgpt",
                         label="develops",
                     )
                 ],
@@ -438,25 +511,23 @@ def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolver
     knowledge_base_store.save(existing_graph)
     fake = FakeSemanticLLM(
         responses=[
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(
-                        id="openai-organization",
+                    _ExtractedNode(
+                        ref="openai-organization",
                         label="OpenAI organization",
-                        type="Organization",
+                        type="organization",
                     )
-                ],
-                edges=[],
+                ]
             ),
-            KnowledgeGraph(
+            _extracted_graph(
                 nodes=[
-                    Node(
-                        id="openai-company",
+                    _ExtractedNode(
+                        ref="openai-company",
                         label="OpenAI company",
-                        type="Organization",
+                        type="organization",
                     )
-                ],
-                edges=[],
+                ]
             ),
         ],
         decisions=[],
@@ -486,15 +557,17 @@ def test_ingest_unprocessed_documents_uses_min_candidate_similarity_for_resolver
 
     document_graph = graph_store.load(new_source)
     knowledge_base = knowledge_base_store.load()
+    first_chunk_id = f"{source_key(new_source)}-chunk-0000"
+    second_chunk_id = f"{source_key(new_source)}-chunk-0001"
 
     assert {node.id for node in document_graph.nodes} == {
-        "openai-organization",
-        "openai-company",
+        f"{first_chunk_id}::node-0001",
+        f"{second_chunk_id}::node-0001",
     }
     assert {node.id for node in knowledge_base.nodes} == {
         "openai",
-        "openai-organization",
-        "openai-company",
+        f"{first_chunk_id}::node-0001",
+        f"{second_chunk_id}::node-0001",
     }
     assert [
         response_model
@@ -513,9 +586,8 @@ def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_
     )
     fake = FakeLLM(
         [
-            KnowledgeGraph(
-                nodes=[Node(id="pending", label="Pending", type="Concept")],
-                edges=[],
+            _extracted_graph(
+                nodes=[_ExtractedNode(ref="pending", label="Pending", type="concept")]
             )
         ]
     )
@@ -529,7 +601,11 @@ def test_ingest_unprocessed_documents_rebuilds_missing_knowledge_base_cache(tmp_
     )
 
     graph = knowledge_base_store.load()
-    assert {node.id for node in graph.nodes} == {"processed", "pending"}
+    pending_chunk_id = f"{source_key('docs/pending.md')}-chunk-0000"
+    assert {node.id for node in graph.nodes} == {
+        "processed",
+        f"{pending_chunk_id}::node-0001",
+    }
 
 
 def test_search_knowledge_base_uses_cached_graph_when_available(tmp_path):

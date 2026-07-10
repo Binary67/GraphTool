@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.taxonomy import (
@@ -44,8 +44,10 @@ SYSTEM_PROMPT = (
     "markdown headings, tables, rows, columns, URLs, or generic document "
     "structure unless the content is explicitly about those concepts. Table "
     "contents can contain useful facts; extract those facts, not the table "
-    "mechanics. Prefer a small graph of the most salient entities. Every edge "
-    "must reference existing node ids. Node type must be one of: "
+    "mechanics. Prefer a small graph of the most salient entities. Assign every "
+    "node a unique temporary ref within this response. Every edge must use "
+    "source_ref and target_ref to reference existing node refs. Node type must "
+    "be one of: "
     f"{canonical_node_type_text()}. If none of those types fit, use "
     f"{UNCLASSIFIED_NODE_TYPE} and provide suggested_type with the missing "
     "taxonomy type. Return only the structured nodes and edges."
@@ -100,7 +102,7 @@ class _GeneratedChunkGraph:
 class _ExtractedNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    ref: str
     label: str
     type: CanonicalNodeType
     suggested_type: str | None = None
@@ -118,8 +120,8 @@ class _ExtractedEdge(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    source: str
-    target: str
+    source_ref: str
+    target_ref: str
     label: str
 
 
@@ -128,6 +130,20 @@ class _ExtractedKnowledgeGraph(BaseModel):
 
     nodes: list[_ExtractedNode]
     edges: list[_ExtractedEdge]
+
+    @model_validator(mode="after")
+    def validate_unique_node_refs(self) -> "_ExtractedKnowledgeGraph":
+        seen = set()
+        duplicate_refs = []
+        for node in self.nodes:
+            if node.ref in seen and node.ref not in duplicate_refs:
+                duplicate_refs.append(node.ref)
+            seen.add(node.ref)
+
+        if duplicate_refs:
+            joined = ", ".join(repr(node_ref) for node_ref in duplicate_refs)
+            raise ValueError(f"extracted node refs must be unique: {joined}")
+        return self
 
 
 def generate_knowledge_graph(
@@ -195,31 +211,46 @@ def _generate_chunk_graph(
             ),
         ),
     ]
-    graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
-    structural_node_ids = _structural_node_ids(graph.nodes, chunk)
-    nodes = _dedupe_chunk_nodes(graph.nodes, structural_node_ids, chunk)
-    node_ids = {node.id for node in nodes}
+    try:
+        graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
+    except ValidationError:
+        RUN_LOGGER.warning(
+            "Retrying chunk graph generation after invalid structured response: %s",
+            chunk.id,
+        )
+        graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
+    structural_node_refs = _structural_node_refs(graph.nodes, chunk)
+    nodes, node_id_by_ref = _build_chunk_nodes(
+        graph.nodes,
+        structural_node_refs,
+        chunk,
+    )
     edges_by_key: dict[tuple[str, str, str], Edge] = {}
     for edge in graph.edges:
-        if edge.source in structural_node_ids or edge.target in structural_node_ids:
+        if (
+            edge.source_ref in structural_node_refs
+            or edge.target_ref in structural_node_refs
+        ):
             continue
 
         missing = []
-        if edge.source not in node_ids:
+        if edge.source_ref not in node_id_by_ref:
             missing.append("source")
-        if edge.target not in node_ids:
+        if edge.target_ref not in node_id_by_ref:
             missing.append("target")
         if missing:
             _record_dropped_edge(chunk, edge, missing, dropped_edges_path)
             continue
 
-        key = (edge.source, edge.target, edge.label)
+        source = node_id_by_ref[edge.source_ref]
+        target = node_id_by_ref[edge.target_ref]
+        key = (source, target, edge.label)
         edges_by_key.setdefault(
             key,
             Edge(
                 id=edge.id,
-                source=edge.source,
-                target=edge.target,
+                source=source,
+                target=target,
                 label=edge.label,
                 chunk_ids=[chunk.id],
             ),
@@ -233,7 +264,7 @@ def _generate_chunk_graph(
         graph=KnowledgeGraph(nodes=nodes, edges=edges),
         raw_nodes=len(graph.nodes),
         kept_nodes=len(nodes),
-        dropped_structural_nodes=len(structural_node_ids),
+        dropped_structural_nodes=len(structural_node_refs),
         raw_edges=len(graph.edges),
         kept_edges=len(edges),
     )
@@ -241,38 +272,33 @@ def _generate_chunk_graph(
     return generated
 
 
-def _dedupe_chunk_nodes(
+def _build_chunk_nodes(
     extracted_nodes: Sequence[_ExtractedNode],
-    structural_node_ids: set[str],
+    structural_node_refs: set[str],
     chunk: Chunk,
-) -> list[Node]:
-    nodes_by_id: dict[str, Node] = {}
-
-    for node in extracted_nodes:
-        if node.id in structural_node_ids:
+) -> tuple[list[Node], dict[str, str]]:
+    nodes: list[Node] = []
+    node_id_by_ref: dict[str, str] = {}
+    for extracted_node in extracted_nodes:
+        if extracted_node.ref in structural_node_refs:
             continue
 
-        incoming = Node(
-            id=node.id,
-            label=node.label,
-            type=node.type,
-            suggested_type=node.suggested_type,
-            chunk_ids=[chunk.id],
+        node_id = _scoped_node_id(chunk.id, len(nodes) + 1)
+        node_id_by_ref[extracted_node.ref] = node_id
+        nodes.append(
+            Node(
+                id=node_id,
+                label=extracted_node.label,
+                type=extracted_node.type,
+                suggested_type=extracted_node.suggested_type,
+                chunk_ids=[chunk.id],
+            )
         )
-        existing = nodes_by_id.get(incoming.id)
-        if existing is None:
-            nodes_by_id[incoming.id] = incoming
-            continue
+    return nodes, node_id_by_ref
 
-        nodes_by_id[incoming.id] = existing.model_copy(
-            update={
-                "type": _merge_node_type(existing, incoming),
-                "aliases": _merge_aliases(existing, incoming),
-                "suggested_type": existing.suggested_type or incoming.suggested_type,
-            }
-        )
 
-    return list(nodes_by_id.values())
+def _scoped_node_id(chunk_id: str, index: int) -> str:
+    return f"{chunk_id}::node-{index:04d}"
 
 
 def _heading_path_text(chunk: Chunk) -> str:
@@ -285,9 +311,9 @@ def _llm_model(llm: LLMClient) -> str | None:
     return getattr(llm, "model", None) or getattr(llm, "text_model", None)
 
 
-def _structural_node_ids(nodes: Sequence[_ExtractedNode], chunk: Chunk) -> set[str]:
+def _structural_node_refs(nodes: Sequence[_ExtractedNode], chunk: Chunk) -> set[str]:
     return {
-        node.id
+        node.ref
         for node in nodes
         if _is_structural_node(node, chunk)
     }
@@ -303,8 +329,7 @@ def _is_structural_node(node: _ExtractedNode, chunk: Chunk) -> bool:
         return True
 
     metadata_values = _source_metadata_values(chunk)
-    normalized_id = _normalize_structural_text(node.id)
-    if normalized_id in metadata_values or normalized_label in metadata_values:
+    if normalized_label in metadata_values:
         return True
 
     return _is_chunk_wrapper(normalized_label, _heading_metadata_values(chunk))
@@ -414,8 +439,8 @@ def _record_dropped_edge(
         "chunk_id": chunk.id,
         "edge_id": edge.id,
         "label": edge.label,
-        "edge_source": edge.source,
-        "edge_target": edge.target,
+        "edge_source": edge.source_ref,
+        "edge_target": edge.target_ref,
         "missing": missing,
     }
     with dropped_edges_path.open("a", encoding="utf-8") as file:
@@ -426,9 +451,9 @@ def _record_dropped_edge(
 def _missing_edge_description(edge: _ExtractedEdge, missing: list[str]) -> str:
     parts = []
     if "source" in missing:
-        parts.append(f"source node {edge.source}")
+        parts.append(f"source node {edge.source_ref}")
     if "target" in missing:
-        parts.append(f"target node {edge.target}")
+        parts.append(f"target node {edge.target_ref}")
     return ", ".join(parts)
 
 

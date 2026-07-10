@@ -23,7 +23,10 @@ T = TypeVar("T")
 
 
 class FakeLLM:
-    def __init__(self, responses: list[_ExtractedKnowledgeGraph]) -> None:
+    def __init__(
+        self,
+        responses: list[_ExtractedKnowledgeGraph | ValidationError],
+    ) -> None:
         self.responses = responses
         self.calls: list[tuple[list[LLMMessage], type]] = []
 
@@ -32,7 +35,10 @@ class FakeLLM:
 
     def generate_structured(self, messages, response_model: type[T]) -> T:
         self.calls.append((list(messages), response_model))
-        return cast(T, self.responses[len(self.calls) - 1])
+        response = self.responses[len(self.calls) - 1]
+        if isinstance(response, ValidationError):
+            raise response
+        return cast(T, response)
 
 
 class RecordingTaxonomySuggestionStore:
@@ -63,6 +69,10 @@ def _extracted_graph(
     edges: list[_ExtractedEdge] | None = None,
 ) -> _ExtractedKnowledgeGraph:
     return _ExtractedKnowledgeGraph(nodes=nodes or [], edges=edges or [])
+
+
+def _scoped_id(index: int, chunk_id: str = "doc-chunk-0000") -> str:
+    return f"{chunk_id}::node-{index:04d}"
 
 
 def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
@@ -101,6 +111,8 @@ def test_generate_knowledge_graph_prompt_keeps_metadata_out_of_graph_content():
     assert "Do not create nodes for prompt metadata" in system_prompt
     assert "source file paths" in system_prompt
     assert "Table contents can contain useful facts" in system_prompt
+    assert "unique temporary ref" in system_prompt
+    assert "source_ref and target_ref" in system_prompt
     assert "Chunk ID:" not in user_prompt
     assert "Source:" not in user_prompt
     assert "Context only, do not extract this as graph content" in user_prompt
@@ -121,12 +133,12 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
     fake = FakeLLM(
         [
             _extracted_graph(
-                nodes=[_ExtractedNode(id="python", label="Python", type="concept")],
+                nodes=[_ExtractedNode(ref="python", label="Python", type="concept")],
                 edges=[
                     _ExtractedEdge(
                         id="e1",
-                        source="python",
-                        target="python",
+                        source_ref="python",
+                        target_ref="python",
                         label="self",
                     )
                 ],
@@ -136,8 +148,11 @@ def test_generate_knowledge_graph_attaches_chunk_ids_to_nodes_and_edges():
 
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
+    assert graph.nodes[0].id == _scoped_id(1)
     assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
     assert graph.edges[0].id == "edge-0001"
+    assert graph.edges[0].source == _scoped_id(1)
+    assert graph.edges[0].target == _scoped_id(1)
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000"]
 
 
@@ -146,42 +161,42 @@ def test_generate_knowledge_graph_filters_structural_nodes_and_edges():
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="skills", label="Skills", type="feature"),
+                    _ExtractedNode(ref="skills", label="Skills", type="feature"),
                     _ExtractedNode(
-                        id="workflows",
+                        ref="workflows",
                         label="Reusable workflows",
                         type="concept",
                     ),
                     _ExtractedNode(
-                        id="chunk-wrapper",
+                        ref="chunk-wrapper",
                         label="Chunk: Python",
                         type="concept",
                     ),
                     _ExtractedNode(
-                        id="table",
+                        ref="table",
                         label="Table",
                         type="unclassified",
                         suggested_type="table",
                     ),
-                    _ExtractedNode(id="source-path", label="doc.md", type="concept"),
+                    _ExtractedNode(ref="source-path", label="doc.md", type="concept"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="fact-edge",
-                        source="skills",
-                        target="workflows",
+                        source_ref="skills",
+                        target_ref="workflows",
                         label="used_for",
                     ),
                     _ExtractedEdge(
                         id="table-edge",
-                        source="skills",
-                        target="table",
+                        source_ref="skills",
+                        target_ref="table",
                         label="appears_in",
                     ),
                     _ExtractedEdge(
                         id="source-edge",
-                        source="source-path",
-                        target="skills",
+                        source_ref="source-path",
+                        target_ref="skills",
                         label="contains",
                     ),
                 ],
@@ -191,11 +206,14 @@ def test_generate_knowledge_graph_filters_structural_nodes_and_edges():
 
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
-    assert {node.id for node in graph.nodes} == {"skills", "workflows"}
+    assert {node.id for node in graph.nodes} == {
+        _scoped_id(1),
+        _scoped_id(2),
+    }
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
-    assert graph.edges[0].source == "skills"
-    assert graph.edges[0].target == "workflows"
+    assert graph.edges[0].source == _scoped_id(1)
+    assert graph.edges[0].target == _scoped_id(2)
     assert graph.edges[0].label == "used_for"
 
 
@@ -205,7 +223,7 @@ def test_generate_knowledge_graph_keeps_meaningful_document_type():
             _extracted_graph(
                 nodes=[
                     _ExtractedNode(
-                        id="plugin-guide",
+                        ref="plugin-guide",
                         label="Plugin guide",
                         type="document",
                     ),
@@ -216,34 +234,50 @@ def test_generate_knowledge_graph_keeps_meaningful_document_type():
 
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
-    assert [node.id for node in graph.nodes] == ["plugin-guide"]
+    assert [node.id for node in graph.nodes] == [_scoped_id(1)]
     assert graph.nodes[0].type == "document"
 
 
-def test_generate_knowledge_graph_merges_duplicate_nodes_within_chunk():
+def test_extracted_knowledge_graph_rejects_duplicate_node_refs():
+    with pytest.raises(
+        ValidationError,
+        match="extracted node refs must be unique: 'openai'",
+    ):
+        _extracted_graph(
+            nodes=[
+                _ExtractedNode(ref="openai", label="OpenAI", type="organization"),
+                _ExtractedNode(
+                    ref="openai",
+                    label="OpenAI organization",
+                    type="organization",
+                ),
+            ],
+        )
+
+
+def test_generate_knowledge_graph_retries_invalid_structured_response_once():
+    with pytest.raises(ValidationError) as error:
+        _extracted_graph(
+            nodes=[
+                _ExtractedNode(ref="duplicate", label="OpenAI", type="organization"),
+                _ExtractedNode(ref="duplicate", label="ChatGPT", type="product"),
+            ]
+        )
     fake = FakeLLM(
         [
+            error.value,
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="openai", label="OpenAI", type="organization"),
-                    _ExtractedNode(
-                        id="openai",
-                        label="OpenAI organization",
-                        type="organization",
-                    ),
-                ],
-            )
+                    _ExtractedNode(ref="valid", label="OpenAI", type="organization")
+                ]
+            ),
         ]
     )
 
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
-    assert len(graph.nodes) == 1
-    assert graph.nodes[0].id == "openai"
-    assert graph.nodes[0].label == "OpenAI"
-    assert graph.nodes[0].type == "organization"
-    assert graph.nodes[0].aliases == ["OpenAI organization"]
-    assert graph.nodes[0].chunk_ids == ["doc-chunk-0000"]
+    assert len(fake.calls) == 2
+    assert [node.id for node in graph.nodes] == [_scoped_id(1)]
 
 
 def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk():
@@ -251,21 +285,21 @@ def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk(
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="python", label="Python", type="concept"),
-                    _ExtractedNode(id="pydantic", label="Pydantic", type="tool"),
-                    _ExtractedNode(id="fastapi", label="FastAPI", type="tool"),
+                    _ExtractedNode(ref="python", label="Python", type="concept"),
+                    _ExtractedNode(ref="pydantic", label="Pydantic", type="tool"),
+                    _ExtractedNode(ref="fastapi", label="FastAPI", type="tool"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="duplicate-edge",
-                        source="pydantic",
-                        target="python",
+                        source_ref="pydantic",
+                        target_ref="python",
                         label="built_for",
                     ),
                     _ExtractedEdge(
                         id="duplicate-edge",
-                        source="fastapi",
-                        target="pydantic",
+                        source_ref="fastapi",
+                        target_ref="pydantic",
                         label="uses",
                     ),
                 ],
@@ -276,8 +310,18 @@ def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk(
     graph = generate_knowledge_graph([_chunk()], "doc.md", fake)
 
     assert [(edge.id, edge.source, edge.target, edge.label) for edge in graph.edges] == [
-        ("edge-0001", "pydantic", "python", "built_for"),
-        ("edge-0002", "fastapi", "pydantic", "uses"),
+        (
+            "edge-0001",
+            _scoped_id(2),
+            _scoped_id(1),
+            "built_for",
+        ),
+        (
+            "edge-0002",
+            _scoped_id(3),
+            _scoped_id(2),
+            "uses",
+        ),
     ]
 
 
@@ -286,20 +330,20 @@ def test_generate_knowledge_graph_deduplicates_semantic_edges_within_chunk():
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="python", label="Python", type="concept"),
-                    _ExtractedNode(id="pydantic", label="Pydantic", type="tool"),
+                    _ExtractedNode(ref="python", label="Python", type="concept"),
+                    _ExtractedNode(ref="pydantic", label="Pydantic", type="tool"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="first-edge",
-                        source="pydantic",
-                        target="python",
+                        source_ref="pydantic",
+                        target_ref="python",
                         label="built_for",
                     ),
                     _ExtractedEdge(
                         id="second-edge",
-                        source="pydantic",
-                        target="python",
+                        source_ref="pydantic",
+                        target_ref="python",
                         label="built_for",
                     ),
                 ],
@@ -311,8 +355,8 @@ def test_generate_knowledge_graph_deduplicates_semantic_edges_within_chunk():
 
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
-    assert graph.edges[0].source == "pydantic"
-    assert graph.edges[0].target == "python"
+    assert graph.edges[0].source == _scoped_id(2)
+    assert graph.edges[0].target == _scoped_id(1)
     assert graph.edges[0].label == "built_for"
     assert graph.edges[0].chunk_ids == ["doc-chunk-0000"]
 
@@ -323,20 +367,20 @@ def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="python", label="Python", type="concept"),
-                    _ExtractedNode(id="pydantic", label="Pydantic", type="tool"),
+                    _ExtractedNode(ref="python", label="Python", type="concept"),
+                    _ExtractedNode(ref="pydantic", label="Pydantic", type="tool"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="valid-edge",
-                        source="pydantic",
-                        target="python",
+                        source_ref="pydantic",
+                        target_ref="python",
                         label="built_for",
                     ),
                     _ExtractedEdge(
                         id="missing-edge",
-                        source="pydantic",
-                        target="missing-node",
+                        source_ref="pydantic",
+                        target_ref="missing-node",
                         label="mentions",
                     ),
                 ],
@@ -353,8 +397,8 @@ def test_generate_knowledge_graph_drops_and_records_edges_with_missing_nodes(tmp
 
     assert len(graph.edges) == 1
     assert graph.edges[0].id == "edge-0001"
-    assert graph.edges[0].source == "pydantic"
-    assert graph.edges[0].target == "python"
+    assert graph.edges[0].source == _scoped_id(2)
+    assert graph.edges[0].target == _scoped_id(1)
 
     records = [
         json.loads(line)
@@ -378,13 +422,13 @@ def test_generate_knowledge_graph_logs_dropped_edges_to_run_log(tmp_path):
             [
                 _extracted_graph(
                     nodes=[
-                        _ExtractedNode(id="python", label="Python", type="concept"),
+                        _ExtractedNode(ref="python", label="Python", type="concept"),
                     ],
                     edges=[
                         _ExtractedEdge(
                             id="missing-edge",
-                            source="python",
-                            target="missing-node",
+                            source_ref="python",
+                            target_ref="missing-node",
                             label="mentions",
                         )
                     ],
@@ -412,10 +456,10 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
             [
                 _extracted_graph(
                     nodes=[
-                        _ExtractedNode(id="skills", label="Skills", type="feature"),
-                        _ExtractedNode(id="workflow", label="Workflow", type="concept"),
+                        _ExtractedNode(ref="skills", label="Skills", type="feature"),
+                        _ExtractedNode(ref="workflow", label="Workflow", type="concept"),
                         _ExtractedNode(
-                            id="table",
+                            ref="table",
                             label="Table",
                             type="unclassified",
                             suggested_type="table",
@@ -424,14 +468,14 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
                     edges=[
                         _ExtractedEdge(
                             id="fact-edge",
-                            source="skills",
-                            target="workflow",
+                            source_ref="skills",
+                            target_ref="workflow",
                             label="supports",
                         ),
                         _ExtractedEdge(
                             id="table-edge",
-                            source="skills",
-                            target="table",
+                            source_ref="skills",
+                            target_ref="table",
                             label="appears_in",
                         ),
                     ],
@@ -459,34 +503,34 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
         _close_logger(logger)
 
 
-def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
+def test_generate_knowledge_graph_scopes_reused_node_refs_across_chunks():
     fake = FakeLLM(
         [
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="python", label="Python", type="concept"),
-                    _ExtractedNode(id="pydantic", label="Pydantic", type="tool"),
+                    _ExtractedNode(ref="node-1", label="OpenAI", type="organization"),
+                    _ExtractedNode(ref="node-2", label="ChatGPT", type="product"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="first-edge",
-                        source="pydantic",
-                        target="python",
-                        label="built_for",
+                        source_ref="node-1",
+                        target_ref="node-2",
+                        label="develops",
                     )
                 ],
             ),
             _extracted_graph(
                 nodes=[
-                    _ExtractedNode(id="python", label="Python 3", type="concept"),
-                    _ExtractedNode(id="pydantic", label="Pydantic", type="tool"),
+                    _ExtractedNode(ref="node-1", label="Claude", type="product"),
+                    _ExtractedNode(ref="node-2", label="Anthropic", type="organization"),
                 ],
                 edges=[
                     _ExtractedEdge(
                         id="second-edge",
-                        source="pydantic",
-                        target="python",
-                        label="built_for",
+                        source_ref="node-2",
+                        target_ref="node-1",
+                        label="develops",
                     )
                 ],
             ),
@@ -499,28 +543,44 @@ def test_generate_knowledge_graph_merges_duplicate_nodes_and_relationships():
 
     graph = generate_knowledge_graph(chunks, "doc.md", fake)
 
-    assert len(graph.nodes) == 2
-    assert graph.nodes[0].id == "python"
-    assert graph.nodes[0].label == "Python"
-    assert graph.nodes[0].type == "concept"
-    assert graph.nodes[0].chunk_ids == ["doc-chunk-0000", "doc-chunk-0001"]
-    assert len(graph.edges) == 1
-    assert graph.edges[0].id == "edge-0001"
-    assert graph.edges[0].chunk_ids == ["doc-chunk-0000", "doc-chunk-0001"]
+    assert {node.id: node.label for node in graph.nodes} == {
+        _scoped_id(1, "doc-chunk-0000"): "OpenAI",
+        _scoped_id(2, "doc-chunk-0000"): "ChatGPT",
+        _scoped_id(1, "doc-chunk-0001"): "Claude",
+        _scoped_id(2, "doc-chunk-0001"): "Anthropic",
+    }
+    assert {(edge.source, edge.target, edge.label) for edge in graph.edges} == {
+        (
+            _scoped_id(1, "doc-chunk-0000"),
+            _scoped_id(2, "doc-chunk-0000"),
+            "develops",
+        ),
+        (
+            _scoped_id(2, "doc-chunk-0001"),
+            _scoped_id(1, "doc-chunk-0001"),
+            "develops",
+        ),
+    }
 
 
 def test_extracted_knowledge_graph_schema_is_strict_for_openai():
     schema = _ExtractedKnowledgeGraph.model_json_schema()
+    node_properties = _ExtractedNode.model_json_schema()["properties"]
+    edge_properties = _ExtractedEdge.model_json_schema()["properties"]
 
-    assert "properties" not in _ExtractedNode.model_json_schema()["properties"]
-    assert "properties" not in _ExtractedEdge.model_json_schema()["properties"]
+    assert "ref" in node_properties
+    assert "id" not in node_properties
+    assert "source_ref" in edge_properties
+    assert "target_ref" in edge_properties
+    assert "properties" not in node_properties
+    assert "properties" not in edge_properties
     assert not _has_additional_properties_true(schema)
 
 
 def test_extracted_node_rejects_unknown_canonical_type():
     with pytest.raises(ValidationError):
         _ExtractedNode(
-            id="marketplace",
+            ref="marketplace",
             label="Marketplace",
             type="distribution_channel",
         )
@@ -529,7 +589,7 @@ def test_extracted_node_rejects_unknown_canonical_type():
 def test_extracted_node_requires_suggested_type_for_unclassified():
     with pytest.raises(ValidationError, match="suggested_type is required"):
         _ExtractedNode(
-            id="marketplace",
+            ref="marketplace",
             label="Marketplace",
             type="unclassified",
         )
@@ -542,7 +602,7 @@ def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
             _extracted_graph(
                 nodes=[
                     _ExtractedNode(
-                        id="marketplace",
+                        ref="marketplace",
                         label="Marketplace",
                         type="unclassified",
                         suggested_type="distribution channel",
@@ -564,7 +624,7 @@ def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
     assert len(records) == 1
     assert records[0].suggested_type == "distribution channel"
     assert records[0].normalized_suggested_type == "distribution_channel"
-    assert records[0].node_id == "marketplace"
+    assert records[0].node_id == _scoped_id(1)
     assert records[0].node_label == "Marketplace"
     assert records[0].current_type == "unclassified"
     assert records[0].source == "doc.md"
@@ -579,7 +639,7 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
             _extracted_graph(
                 nodes=[
                     _ExtractedNode(
-                        id="marketplace",
+                        ref="marketplace",
                         label="Marketplace",
                         type="unclassified",
                         suggested_type="distribution channel",
@@ -589,7 +649,7 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
             _extracted_graph(
                 nodes=[
                     _ExtractedNode(
-                        id="registry",
+                        ref="registry",
                         label="Registry",
                         type="unclassified",
                         suggested_type="distribution channel",
@@ -612,7 +672,10 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
 
     assert len(suggestion_store.calls) == 1
     records = suggestion_store.calls[0]
-    assert [record.node_id for record in records] == ["marketplace", "registry"]
+    assert [record.node_id for record in records] == [
+        _scoped_id(1, "doc-chunk-0000"),
+        _scoped_id(1, "doc-chunk-0001"),
+    ]
     assert [record.chunk_id for record in records] == [
         "doc-chunk-0000",
         "doc-chunk-0001",
