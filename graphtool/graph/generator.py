@@ -176,7 +176,6 @@ def generate_knowledge_graph(
                     nodes=generated.graph.nodes,
                     source=chunk.source,
                     chunk_id=chunk.id,
-                    model=_llm_model(llm),
                 )
             )
 
@@ -312,10 +311,6 @@ def _heading_path_text(chunk: Chunk) -> str:
     if not chunk.heading_path:
         return "(none)"
     return " > ".join(chunk.heading_path)
-
-
-def _llm_model(llm: LLMClient) -> str | None:
-    return getattr(llm, "model", None) or getattr(llm, "text_model", None)
 
 
 def _structural_node_refs(nodes: Sequence[_ExtractedNode], chunk: Chunk) -> set[str]:

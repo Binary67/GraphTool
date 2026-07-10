@@ -41,6 +41,8 @@
 
 - Removed the single-text `EmbeddingClient.embed_text` API in favor of batched
   `embed_texts` calls.
+- Removed unused model metadata from taxonomy suggestion records. Existing
+  `data/taxonomy_suggestions.json` files must be deleted and regenerated.
 
 ## [0.6.0]
 

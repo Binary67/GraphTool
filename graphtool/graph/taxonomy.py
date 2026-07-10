@@ -112,7 +112,6 @@ class TaxonomySuggestionRecord(BaseModel):
     current_type: str
     source: str
     chunk_id: str
-    model: str | None = None
     created_at: datetime
 
 
@@ -253,7 +252,6 @@ def make_taxonomy_suggestion_records(
     nodes: Sequence[object],
     source: str,
     chunk_id: str,
-    model: str | None = None,
     created_at: datetime | None = None,
 ) -> list[TaxonomySuggestionRecord]:
     timestamp = created_at or datetime.now(timezone.utc)
@@ -274,7 +272,6 @@ def make_taxonomy_suggestion_records(
                 current_type=getattr(node, "type"),
                 source=source,
                 chunk_id=chunk_id,
-                model=model,
                 created_at=timestamp,
             )
         )

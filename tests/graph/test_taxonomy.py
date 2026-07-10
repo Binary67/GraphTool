@@ -25,7 +25,6 @@ def _record(
         current_type="unclassified",
         source=source,
         chunk_id=f"{node_id}-chunk-0000",
-        model="test-model",
         created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
 
