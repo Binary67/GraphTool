@@ -1,3 +1,5 @@
+import json
+
 from langchain_core.tools import BaseTool, StructuredTool
 
 from graphtool import corpus
@@ -13,6 +15,8 @@ from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 
+AllowedChunkKeys = set[tuple[str, str]]
+
 
 def make_retrieve_knowledge_context_tool(
     graph_store: JsonGraphStore,
@@ -21,6 +25,7 @@ def make_retrieve_knowledge_context_tool(
     knowledge_base_store: JsonKnowledgeBaseStore | None = None,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
+    allowed_chunks: AllowedChunkKeys | None = None,
     top_chunks: int = 5,
 ) -> BaseTool:
     def retrieve_knowledge_context(query: str) -> str:
@@ -34,18 +39,23 @@ def make_retrieve_knowledge_context_tool(
             chunk_embedding_store=chunk_embedding_store,
             top_chunks=top_chunks,
         )
+        chunk_references = [
+            ChunkReference(
+                chunk_id=hit.chunk.id,
+                source=hit.chunk.source,
+                index=hit.chunk.index,
+                heading_path=hit.chunk.heading_path,
+            )
+            for hit in result.chunks
+        ]
+        if allowed_chunks is not None:
+            allowed_chunks.update(
+                (ref.source, ref.chunk_id) for ref in chunk_references
+            )
         return RetrievedContext(
             query=result.query,
             sources=result.sources,
-            chunk_references=[
-                ChunkReference(
-                    chunk_id=hit.chunk.id,
-                    source=hit.chunk.source,
-                    index=hit.chunk.index,
-                    heading_path=hit.chunk.heading_path,
-                )
-                for hit in result.chunks
-            ],
+            chunk_references=chunk_references,
             context_text=result.context_text,
         ).model_dump_json()
 
@@ -85,9 +95,22 @@ def get_chunk_neighborhood(
     )
 
 
-def make_get_chunk_neighborhood_tool(chunk_store: JsonChunkStore) -> BaseTool:
+def make_get_chunk_neighborhood_tool(
+    chunk_store: JsonChunkStore,
+    allowed_chunks: AllowedChunkKeys | None = None,
+) -> BaseTool:
     def lookup(source: str, chunk_id: str) -> str:
         """Return the chunks immediately before and after a searched chunk."""
+        if allowed_chunks is not None and (source, chunk_id) not in allowed_chunks:
+            return json.dumps(
+                {
+                    "error": (
+                        f"Unknown chunk_id {chunk_id!r} for source {source!r}. "
+                        "Use a source and chunk_id pair from a prior "
+                        "retrieve_knowledge_context result."
+                    )
+                }
+            )
         return get_chunk_neighborhood(
             chunk_store,
             source,

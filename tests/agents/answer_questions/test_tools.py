@@ -43,12 +43,14 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
     knowledge_base_store = object()
     embedding_client = object()
     chunk_embedding_store = object()
+    allowed_chunks: set[tuple[str, str]] = set()
     tool = make_retrieve_knowledge_context_tool(
         graph_store,
         chunk_store,
         knowledge_base_store=knowledge_base_store,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
+        allowed_chunks=allowed_chunks,
     )
 
     output = tool.invoke({"query": "What does GraphTool use?"})
@@ -67,6 +69,7 @@ def test_retrieve_knowledge_context_tool_returns_context_and_sources(monkeypatch
         ],
         "context_text": "Relevant context",
     }
+    assert allowed_chunks == {("docs/guide.md", "guide-chunk-0002")}
     assert calls == [
         (
             "What does GraphTool use?",
@@ -95,7 +98,8 @@ def test_get_chunk_neighborhood_tool_returns_typed_json(tmp_path):
         for index in range(3)
     ]
     store.save("docs/guide.md", chunks)
-    tool = make_get_chunk_neighborhood_tool(store)
+    allowed_chunks = {("docs/guide.md", "guide-chunk-0001")}
+    tool = make_get_chunk_neighborhood_tool(store, allowed_chunks=allowed_chunks)
 
     output = tool.invoke(
         {
@@ -111,3 +115,30 @@ def test_get_chunk_neighborhood_tool_returns_typed_json(tmp_path):
     assert data["previous"]["chunk_id"] == "guide-chunk-0000"
     assert data["current"]["chunk_id"] == "guide-chunk-0001"
     assert data["next"]["chunk_id"] == "guide-chunk-0002"
+
+
+def test_get_chunk_neighborhood_tool_rejects_unknown_chunk(tmp_path):
+    store = JsonChunkStore(tmp_path)
+    chunks = [
+        Chunk(
+            id=f"guide-chunk-{index:04d}",
+            source="docs/guide.md",
+            index=index,
+            text=f"Part {index}",
+            heading_path=["Guide"],
+        )
+        for index in range(3)
+    ]
+    store.save("docs/guide.md", chunks)
+    tool = make_get_chunk_neighborhood_tool(store, allowed_chunks=set())
+
+    output = tool.invoke(
+        {
+            "source": "docs/guide.md",
+            "chunk_id": "guide-chunk-0001",
+        }
+    )
+
+    data = json.loads(output)
+    assert "error" in data
+    assert "guide-chunk-0001" in data["error"]

@@ -119,7 +119,7 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
     )
     monkeypatch.setattr(
         "graphtool.agents.answer_questions.runner.make_get_chunk_neighborhood_tool",
-        lambda chunk_store: fake_neighborhood_tool,
+        lambda chunk_store, allowed_chunks=None: fake_neighborhood_tool,
     )
 
     def fake_build_graph(model, tools):
@@ -147,16 +147,16 @@ def test_answer_question_returns_answer_and_retrieval_trace(monkeypatch):
         "GraphTool retrieval",
     ]
     assert runtime_calls == [config]
-    assert tool_calls == [
-        (
-            (fake_runtime.graph_store, fake_runtime.chunk_store),
-            {
-                "knowledge_base_store": fake_runtime.knowledge_base_store,
-                "embedding_client": fake_runtime.fast_llm,
-                "chunk_embedding_store": fake_runtime.chunk_embedding_store,
-            },
-        )
-    ]
+    assert len(tool_calls) == 1
+    search_args, search_kwargs = tool_calls[0]
+    assert search_args == (fake_runtime.graph_store, fake_runtime.chunk_store)
+    assert search_kwargs == {
+        "knowledge_base_store": fake_runtime.knowledge_base_store,
+        "embedding_client": fake_runtime.fast_llm,
+        "chunk_embedding_store": fake_runtime.chunk_embedding_store,
+        "allowed_chunks": search_kwargs["allowed_chunks"],
+    }
+    assert isinstance(search_kwargs["allowed_chunks"], set)
     assert graph_calls == [
         (fake_model, [fake_tool, fake_neighborhood_tool])
     ]

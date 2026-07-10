@@ -33,14 +33,19 @@ def answer_question(
 ) -> AnswerResult:
     runtime = create_runtime(config)
     model = make_answer_chat_model(config)
+    allowed_chunks: set[tuple[str, str]] = set()
     search_tool = make_retrieve_knowledge_context_tool(
         runtime.graph_store,
         runtime.chunk_store,
         knowledge_base_store=runtime.knowledge_base_store,
         embedding_client=runtime.fast_llm,
         chunk_embedding_store=runtime.chunk_embedding_store,
+        allowed_chunks=allowed_chunks,
     )
-    neighborhood_tool = make_get_chunk_neighborhood_tool(runtime.chunk_store)
+    neighborhood_tool = make_get_chunk_neighborhood_tool(
+        runtime.chunk_store,
+        allowed_chunks=allowed_chunks,
+    )
     graph = build_answer_question_graph(model, [search_tool, neighborhood_tool])
     result = graph.invoke(
         {"messages": [{"role": "user", "content": question}]},
