@@ -14,14 +14,14 @@
 - Added a canonical node taxonomy with persisted suggestions for unclassified
   node types.
 - Added hybrid BM25 and semantic chunk retrieval.
-- Added a LangGraph-based question-answering workflow with source reporting and
-  retrieval traces.
+- Added framework-neutral knowledge-base search with source reporting and
+  structured retrieval results.
 - Added centralized runtime, path, client, and store construction.
 
 ### Changed
 
-- Replaced the single Azure OpenAI model configuration with separate flagship,
-  fast, and embedding deployment settings.
+- Replaced the single Azure OpenAI model configuration with separate text and
+  embedding deployment settings.
 - Added configuration for embedding batch size and the entity-resolution
   candidate similarity threshold.
 - Improved graph extraction to exclude document-structure and metadata nodes,
@@ -29,7 +29,7 @@
 - Kept stored graphs, chunks, embeddings, taxonomy suggestions, and generated
   visualizations synchronized with document additions, updates, and deletions.
 - Updated the main workflow to synchronize documents, export visualizations,
-  and answer questions through the shared runtime.
+  and search the knowledge base through the shared runtime.
 
 ### Fixed
 
@@ -39,6 +39,8 @@
 
 ### Removed
 
+- Removed the built-in LangGraph question-answering agent and LangChain tool
+  adapters; applications can wrap the framework-neutral retrieval APIs.
 - Removed the single-text `EmbeddingClient.embed_text` API in favor of batched
   `embed_texts` calls.
 - Removed unused model metadata from taxonomy suggestion records. Existing

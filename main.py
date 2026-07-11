@@ -1,6 +1,6 @@
-from graphtool.agents.answer_questions import answer_question
 from graphtool.corpus import (
     load_markdown_documents,
+    search_knowledge_base,
     synchronize_documents,
 )
 from graphtool.llm import load_azure_openai_config
@@ -58,13 +58,20 @@ def main() -> None:
         )
         logger.info("Exported %s visualizations", len(visualization_paths))
 
-        logger.info("Answering question")
-        result = answer_question(QUERY, config)
-        logger.info("Answer completed with %s sources", len(result.sources))
+        logger.info("Searching knowledge base")
+        result = search_knowledge_base(
+            QUERY,
+            runtime.graph_store,
+            runtime.chunk_store,
+            knowledge_base_store=runtime.knowledge_base_store,
+            embedding_client=runtime.fast_llm,
+            chunk_embedding_store=runtime.chunk_embedding_store,
+        )
+        logger.info("Search completed with %s sources", len(result.sources))
 
-        print(result.answer)
-        print()
         print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")
+        print()
+        print(result.context_text)
         print()
         print("Visualizations:")
         for path in visualization_paths:

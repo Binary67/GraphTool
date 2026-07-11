@@ -6,7 +6,6 @@ from graphtool.llm.config import ConfigError, load_azure_openai_config
 
 
 def _set_required_env(monkeypatch):
-    monkeypatch.setenv("AZURE_OPENAI_FLAGSHIP_DEPLOYMENT", "flagship-deployment")
     monkeypatch.setenv("AZURE_OPENAI_FAST_DEPLOYMENT", "fast-deployment")
     monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "embedding-deployment")
 
@@ -29,7 +28,6 @@ def test_loads_azure_openai_config(monkeypatch):
     load_dotenv.assert_called_once_with(override=True)
     assert config.endpoint == endpoint
     assert config.api_key == "test-key"
-    assert config.flagship_deployment == "flagship-deployment"
     assert config.fast_deployment == "fast-deployment"
     assert config.embedding_deployment == "embedding-deployment"
     assert config.embedding_batch_size == 4
@@ -41,7 +39,6 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     monkeypatch.setattr("graphtool.llm.config.load_dotenv", load_dotenv)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("AZURE_OPENAI_FLAGSHIP_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_FAST_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", raising=False)
@@ -57,7 +54,6 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     message = str(exc_info.value)
     assert "AZURE_OPENAI_ENDPOINT" in message
     assert "AZURE_OPENAI_API_KEY" in message
-    assert "AZURE_OPENAI_FLAGSHIP_DEPLOYMENT" in message
     assert "AZURE_OPENAI_FAST_DEPLOYMENT" in message
     assert "AZURE_OPENAI_EMBEDDING_DEPLOYMENT" in message
 

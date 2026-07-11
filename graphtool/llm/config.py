@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 DEFAULT_EMBEDDING_BATCH_SIZE = 4
 DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY = 0.80
-FLAGSHIP_DEPLOYMENT_ENV = "AZURE_OPENAI_FLAGSHIP_DEPLOYMENT"
 FAST_DEPLOYMENT_ENV = "AZURE_OPENAI_FAST_DEPLOYMENT"
 EMBEDDING_DEPLOYMENT_ENV = "AZURE_OPENAI_EMBEDDING_DEPLOYMENT"
 EMBEDDING_BATCH_SIZE_ENV = "AZURE_OPENAI_EMBEDDING_BATCH_SIZE"
@@ -24,7 +23,6 @@ class ConfigError(ValueError):
 class AzureOpenAIConfig:
     endpoint: str
     api_key: str
-    flagship_deployment: str
     fast_deployment: str
     embedding_deployment: str
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
@@ -39,7 +37,6 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
     names = [
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_KEY",
-        FLAGSHIP_DEPLOYMENT_ENV,
         FAST_DEPLOYMENT_ENV,
         EMBEDDING_DEPLOYMENT_ENV,
     ]
@@ -53,7 +50,6 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
     return AzureOpenAIConfig(
         endpoint=cast(str, values["AZURE_OPENAI_ENDPOINT"]),
         api_key=cast(str, values["AZURE_OPENAI_API_KEY"]),
-        flagship_deployment=cast(str, values[FLAGSHIP_DEPLOYMENT_ENV]),
         fast_deployment=cast(str, values[FAST_DEPLOYMENT_ENV]),
         embedding_deployment=cast(str, values[EMBEDDING_DEPLOYMENT_ENV]),
         embedding_batch_size=_embedding_batch_size(os.getenv(EMBEDDING_BATCH_SIZE_ENV)),
