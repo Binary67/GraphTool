@@ -1,8 +1,4 @@
-from graphtool.corpus import (
-    load_markdown_documents,
-    search_knowledge_base,
-    synchronize_documents,
-)
+from graphtool.corpus import load_markdown_documents, synchronize_documents
 from graphtool.llm import load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
 from graphtool.runtime import DEFAULT_MAX_LOG_FILES, create_runtime, default_paths
@@ -59,14 +55,7 @@ def main() -> None:
         logger.info("Exported %s visualizations", len(visualization_paths))
 
         logger.info("Searching knowledge base")
-        result = search_knowledge_base(
-            QUERY,
-            runtime.graph_store,
-            runtime.chunk_store,
-            knowledge_base_store=runtime.knowledge_base_store,
-            embedding_client=runtime.fast_llm,
-            chunk_embedding_store=runtime.chunk_embedding_store,
-        )
+        result = runtime.search(QUERY)
         logger.info("Search completed with %s sources", len(result.sources))
 
         print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")

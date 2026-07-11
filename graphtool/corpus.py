@@ -18,10 +18,8 @@ from graphtool.graph.taxonomy import (
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import KnowledgeGraph
-from graphtool.llm.base import EmbeddingClient, LLMClient
+from graphtool.llm.base import LLMClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
-from graphtool.retrieval.retriever import retrieve_context
-from graphtool.retrieval.types import RetrievalResult
 from graphtool.source import document_content_hash
 
 
@@ -31,12 +29,6 @@ class CorpusSyncResult:
     changed_sources: list[str]
     deleted_sources: list[str]
     unchanged_sources: list[str]
-
-
-@dataclass(frozen=True)
-class SearchContext:
-    graph: KnowledgeGraph
-    chunks: list[Chunk]
 
 
 @dataclass(frozen=True)
@@ -70,54 +62,6 @@ def load_markdown_documents(
         source = markdown_path.relative_to(root).as_posix()
         documents[source] = markdown_path.read_text()
     return documents
-
-
-def load_search_context(
-    graph_store: JsonGraphStore,
-    chunk_store: JsonChunkStore,
-    *,
-    knowledge_base_store: JsonKnowledgeBaseStore | None = None,
-) -> SearchContext:
-    if knowledge_base_store is not None and knowledge_base_store.exists():
-        return SearchContext(
-            graph=knowledge_base_store.load(),
-            chunks=chunk_store.load_all(),
-        )
-
-    graphs = graph_store.load_all()
-    chunks: list[Chunk] = []
-    for graph in graphs:
-        if graph.metadata is None:
-            raise ValueError("Cannot search graph without metadata.source.")
-        chunks.extend(chunk_store.load(graph.metadata.source))
-
-    graph = _load_or_rebuild_knowledge_base(graphs, knowledge_base_store)
-    return SearchContext(graph=graph, chunks=chunks)
-
-
-def search_knowledge_base(
-    query: str,
-    graph_store: JsonGraphStore,
-    chunk_store: JsonChunkStore,
-    *,
-    knowledge_base_store: JsonKnowledgeBaseStore | None = None,
-    embedding_client: EmbeddingClient | None = None,
-    chunk_embedding_store: ChunkEmbeddingStore | None = None,
-    top_chunks: int = 5,
-) -> RetrievalResult:
-    context = load_search_context(
-        graph_store,
-        chunk_store,
-        knowledge_base_store=knowledge_base_store,
-    )
-    return retrieve_context(
-        query,
-        context.graph,
-        context.chunks,
-        top_chunks=top_chunks,
-        embedding_client=embedding_client,
-        chunk_embedding_store=chunk_embedding_store,
-    )
 
 
 def synchronize_documents(
@@ -275,20 +219,6 @@ def rebuild_knowledge_base(
     resolver: SemanticEntityResolver | None = None,
 ) -> KnowledgeGraph:
     graph = _combine_knowledge_graphs(graph_store.load_all(), resolver)
-    knowledge_base_store.save(graph)
-    return graph
-
-
-def _load_or_rebuild_knowledge_base(
-    graphs: list[KnowledgeGraph],
-    knowledge_base_store: JsonKnowledgeBaseStore | None,
-) -> KnowledgeGraph:
-    if knowledge_base_store is None:
-        return combine_knowledge_graphs(graphs)
-    if knowledge_base_store.exists():
-        return knowledge_base_store.load()
-
-    graph = combine_knowledge_graphs(graphs)
     knowledge_base_store.save(graph)
     return graph
 

@@ -11,7 +11,11 @@ from graphtool.graph import (
 )
 from graphtool.llm import AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
-from graphtool.retrieval import JsonChunkEmbeddingStore
+from graphtool.retrieval import (
+    JsonChunkEmbeddingStore,
+    RetrievalResult,
+    retrieve_context,
+)
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX_LOG_FILES = 3
@@ -44,6 +48,21 @@ class GraphToolRuntime:
     chunk_store: JsonChunkStore
     chunk_embedding_store: JsonChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
+
+    def search(self, query: str, *, top_chunks: int = 5) -> RetrievalResult:
+        if not self.knowledge_base_store.exists():
+            raise FileNotFoundError(
+                "Knowledge base not found. Synchronize documents before searching."
+            )
+
+        return retrieve_context(
+            query,
+            self.knowledge_base_store.load(),
+            self.chunk_store.load_all(),
+            top_chunks=top_chunks,
+            embedding_client=self.fast_llm,
+            chunk_embedding_store=self.chunk_embedding_store,
+        )
 
 
 def default_paths(root: str | Path | None = None) -> GraphToolPaths:
