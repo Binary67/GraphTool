@@ -70,6 +70,7 @@ class SemanticEntityResolver:
         self._merge_confidence_threshold = merge_confidence_threshold
         self._min_candidate_similarity = min_candidate_similarity
         self._relationship_contexts: dict[str, list[str]] = {}
+        self._prefetched_vectors: dict[tuple[str, str], list[float]] = {}
 
     def combine(self, graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
         return self._combine(None, graphs, resolve_within_graph=True)
@@ -90,6 +91,10 @@ class SemanticEntityResolver:
     ) -> KnowledgeGraph:
         all_graphs = [existing, *graphs] if existing is not None else list(graphs)
         self._relationship_contexts = _build_relationship_contexts(all_graphs)
+        self._prefetched_vectors = {}
+        self._prefetch_embeddings(
+            [node for graph in graphs for node in graph.nodes]
+        )
 
         canonical_nodes: list[Node] = []
         canonical_by_id: dict[str, Node] = {}
@@ -239,11 +244,7 @@ class SemanticEntityResolver:
         if not candidate_nodes:
             return []
 
-        incoming_text = node_embedding_text(
-            node,
-            self._relationship_contexts.get(node.id, []),
-        )
-        incoming_vector = self._embedding_client.embed_texts([incoming_text])[0]
+        incoming_vector = self._ensure_embeddings([node])[0].vector
         candidate_records = self._ensure_embeddings(candidate_nodes)
         scored = []
         for candidate, record in zip(candidate_nodes, candidate_records, strict=True):
@@ -253,6 +254,40 @@ class SemanticEntityResolver:
 
         scored.sort(key=lambda item: (-item[1], item[0].id))
         return scored[: self._top_k]
+
+    def _prefetch_embeddings(self, nodes: Sequence[Node]) -> None:
+        embedding_model = self._embedding_client.embedding_model
+        missing_by_key: dict[tuple[str, str], str] = {}
+
+        for node in nodes:
+            text = node_embedding_text(
+                node,
+                self._relationship_contexts.get(node.id, []),
+            )
+            text_hash = embedding_input_hash(text)
+            key = (embedding_model, text_hash)
+            if key in self._prefetched_vectors:
+                continue
+
+            existing = self._records.get(node.id)
+            if (
+                existing is not None
+                and existing.embedding_model == embedding_model
+                and existing.embedding_input_hash == text_hash
+            ):
+                self._prefetched_vectors[key] = existing.vector
+                continue
+
+            missing_by_key.setdefault(key, text)
+
+        if not missing_by_key:
+            return
+
+        keys = list(missing_by_key)
+        vectors = self._embedding_client.embed_texts(
+            [missing_by_key[key] for key in keys]
+        )
+        self._prefetched_vectors.update(zip(keys, vectors, strict=True))
 
     def _ensure_embeddings(self, nodes: Sequence[Node]) -> list[NodeEmbeddingRecord]:
         records: list[NodeEmbeddingRecord | None] = []
@@ -272,6 +307,18 @@ class SemanticEntityResolver:
                 and existing.embedding_input_hash == text_hash
             ):
                 records.append(existing)
+                continue
+
+            prefetched = self._prefetched_vectors.get((embedding_model, text_hash))
+            if prefetched is not None:
+                record = NodeEmbeddingRecord(
+                    node_id=node.id,
+                    embedding_model=embedding_model,
+                    embedding_input_hash=text_hash,
+                    vector=prefetched,
+                )
+                self._records[node.id] = record
+                records.append(record)
                 continue
 
             records.append(None)

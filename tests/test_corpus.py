@@ -433,10 +433,12 @@ def test_rebuild_knowledge_base_resolves_only_across_document_graphs(tmp_path):
     )
 
     assert {node.id for node in graph.nodes} == {"alpha", "beta", "gamma"}
-    assert llm.embedding_calls == [
-        "label: Gamma\ntype: Concept",
-        "label: Alpha\ntype: Concept",
-        "label: Beta\ntype: Concept",
+    assert llm.embedding_batch_calls == [
+        [
+            "label: Alpha\ntype: Concept",
+            "label: Beta\ntype: Concept",
+            "label: Gamma\ntype: Concept",
+        ]
     ]
 
 

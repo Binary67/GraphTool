@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from typing import TypeVar, cast
 
 from graphtool.graph.embedding_store import JsonEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
-from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 
 T = TypeVar("T")
@@ -114,10 +115,15 @@ def test_resolver_merges_normalized_alias_match_without_llm():
     assert len(graph.nodes) == 1
     assert graph.nodes[0].id == "chunk-1::node-0001"
     assert llm.calls == []
-    assert embedding.calls == []
+    assert embedding.batch_calls == [
+        [
+            "label: OpenAI\ntype: Organization\naliases: OpenAI organization",
+            "label: openai organization\ntype: Organization",
+        ]
+    ]
 
 
-def test_resolver_embeds_only_after_canonical_candidates_exist():
+def test_resolver_prefetches_incoming_embeddings_in_one_batch():
     embedding = FakeEmbeddingClient(
         {
             "First": [1.0, 0.0],
@@ -138,8 +144,14 @@ def test_resolver_embeds_only_after_canonical_candidates_exist():
         ]
     )
 
-    assert "label: Second" in embedding.calls[0]
-    assert any("label: First" in call for call in embedding.calls[1:])
+    assert embedding.batch_calls == [
+        [
+            "label: First\ntype: Concept",
+            "label: Second\ntype: Concept",
+        ]
+    ]
+    assert embedding.calls.count("label: First\ntype: Concept") == 1
+    assert embedding.calls.count("label: Second\ntype: Concept") == 1
 
 
 def test_combine_into_empty_does_not_resolve_nodes_within_document_graph():
@@ -167,7 +179,12 @@ def test_combine_into_empty_does_not_resolve_nodes_within_document_graph():
 
     assert {node.id for node in graph.nodes} == {"first", "second"}
     assert llm.calls == []
-    assert embedding.calls == []
+    assert embedding.batch_calls == [
+        [
+            "label: First\ntype: Concept",
+            "label: Second\ntype: Concept",
+        ]
+    ]
 
 
 def test_combine_into_uses_only_completed_graphs_as_candidates():
@@ -204,10 +221,12 @@ def test_combine_into_uses_only_completed_graphs_as_candidates():
 
     assert {node.id for node in graph.nodes} == {"existing", "alpha", "beta"}
     assert llm.calls == []
-    assert embedding.calls == [
-        "label: Alpha\ntype: Concept",
-        "label: Existing\ntype: Concept",
-        "label: Beta\ntype: Concept",
+    assert embedding.batch_calls == [
+        [
+            "label: Existing\ntype: Concept",
+            "label: Alpha\ntype: Concept",
+            "label: Beta\ntype: Concept",
+        ]
     ]
 
 
@@ -262,6 +281,17 @@ def test_combine_into_uses_updated_existing_candidates_for_each_node():
     assert graph.nodes[0].aliases == ["OpenAI organization", "OpenAI company"]
     assert len(llm.calls) == 2
     assert "OpenAI organization" in llm.calls[1][0][1].content
+    assert embedding.batch_calls == [
+        [
+            "label: OpenAI organization\ntype: Organization",
+            "label: OpenAI company\ntype: Organization",
+        ],
+        ["label: OpenAI\ntype: Organization"],
+        [
+            "label: OpenAI\ntype: Organization\n"
+            "aliases: OpenAI organization"
+        ],
+    ]
 
 
 def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
@@ -383,7 +413,7 @@ def test_resolver_keeps_related_entities_separate_when_llm_rejects_merge():
     assert {node.id for node in graph.nodes} == {"openai", "openai-api"}
 
 
-def test_resolver_skips_embedding_candidates_with_different_types():
+def test_resolver_skips_llm_resolution_for_different_types():
     llm = FakeLLM()
     embedding = FakeEmbeddingClient(
         {
@@ -408,8 +438,12 @@ def test_resolver_skips_embedding_candidates_with_different_types():
 
     assert {node.id for node in graph.nodes} == {"openai", "openai-api"}
     assert llm.calls == []
-    assert embedding.calls == []
-    assert embedding.batch_calls == []
+    assert embedding.batch_calls == [
+        [
+            "label: OpenAI\ntype: Organization",
+            "label: OpenAI API\ntype: Service",
+        ]
+    ]
 
 
 def test_resolver_merges_exact_id_when_types_differ():
@@ -518,7 +552,74 @@ def test_resolver_merges_singular_plural_normalized_names():
     assert {node.id for node in graph.nodes} == {"marketplaces"}
     assert graph.nodes[0].aliases == []
     assert llm.calls == []
-    assert embedding.calls == []
+    assert embedding.batch_calls == [
+        [
+            "label: Marketplaces\ntype: feature",
+            "label: Marketplace\ntype: feature",
+        ]
+    ]
+
+
+def test_resolver_prefetch_deduplicates_identical_embedding_inputs():
+    embedding = FakeEmbeddingClient({"Shared": [1.0, 0.0]})
+    resolver = SemanticEntityResolver(FakeLLM(), embedding)
+
+    graph = resolver.combine_into(
+        None,
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="first", label="Shared", type="Concept"),
+                    Node(id="second", label="Shared", type="Concept"),
+                ],
+                edges=[],
+            )
+        ],
+    )
+
+    assert {node.id for node in graph.nodes} == {"first", "second"}
+    assert embedding.batch_calls == [["label: Shared\ntype: Concept"]]
+
+
+def test_resolver_prefetch_distinguishes_reused_node_ids_by_input_hash():
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient(
+        {
+            "Alpha": [1.0, 0.0],
+            "Beta": [0.0, 1.0],
+        }
+    )
+    resolver = SemanticEntityResolver(
+        llm,
+        embedding,
+        min_candidate_similarity=0.5,
+    )
+    existing = KnowledgeGraph(
+        nodes=[Node(id="shared", label="Alpha", type="Concept")],
+        edges=[],
+    )
+    incoming = KnowledgeGraph(
+        nodes=[Node(id="shared", label="Beta", type="Concept")],
+        edges=[],
+        metadata=GraphMetadata(
+            source="docs/incoming.md",
+            content_hash="incoming-hash",
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+    graph = resolver.combine_into(existing, [incoming])
+
+    assert {node.id for node in graph.nodes} == {"shared", "shared::0002"}
+    assert llm.calls == []
+    assert embedding.batch_calls == [
+        ["label: Beta\ntype: Concept"],
+        ["label: Alpha\ntype: Concept"],
+    ]
+    assert embedding.calls == [
+        "label: Beta\ntype: Concept",
+        "label: Alpha\ntype: Concept",
+    ]
 
 
 def test_resolver_reuses_matching_cached_embeddings(tmp_path):
