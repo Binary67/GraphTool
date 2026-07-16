@@ -72,12 +72,21 @@ class SemanticEntityResolver:
         self._relationship_contexts: dict[str, list[str]] = {}
 
     def combine(self, graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
-        return self.combine_into(None, graphs)
+        return self._combine(None, graphs, resolve_within_graph=True)
 
     def combine_into(
         self,
         existing: KnowledgeGraph | None,
         graphs: Sequence[KnowledgeGraph],
+    ) -> KnowledgeGraph:
+        return self._combine(existing, graphs, resolve_within_graph=False)
+
+    def _combine(
+        self,
+        existing: KnowledgeGraph | None,
+        graphs: Sequence[KnowledgeGraph],
+        *,
+        resolve_within_graph: bool,
     ) -> KnowledgeGraph:
         all_graphs = [existing, *graphs] if existing is not None else list(graphs)
         self._relationship_contexts = _build_relationship_contexts(all_graphs)
@@ -99,11 +108,24 @@ class SemanticEntityResolver:
             existing_edges = []
 
         for graph in graphs:
+            candidate_ids = (
+                None if resolve_within_graph else set(canonical_by_id)
+            )
             for node in graph.nodes:
+                candidates = (
+                    canonical_nodes
+                    if candidate_ids is None
+                    else [
+                        candidate
+                        for candidate in canonical_nodes
+                        if candidate.id in candidate_ids
+                    ]
+                )
                 canonical_id = self._resolve_node(
                     node,
                     canonical_nodes,
                     canonical_by_id,
+                    candidates,
                     graph.metadata,
                 )
                 node_id_map[node.id] = canonical_id
@@ -127,6 +149,7 @@ class SemanticEntityResolver:
         node: Node,
         canonical_nodes: list[Node],
         canonical_by_id: dict[str, Node],
+        candidates: Sequence[Node],
         metadata: GraphMetadata | None,
     ) -> str:
         existing = canonical_by_id.get(node.id)
@@ -144,7 +167,7 @@ class SemanticEntityResolver:
             )
             return existing.id
 
-        normalized_match = _find_normalized_match(node, canonical_nodes)
+        normalized_match = _find_normalized_match(node, candidates)
         if normalized_match is not None:
             self._merge_into(
                 normalized_match,
@@ -155,12 +178,12 @@ class SemanticEntityResolver:
             )
             return normalized_match.id
 
-        candidates = self._embedding_candidates(node, canonical_nodes)
-        if candidates:
-            decision = self._judge_same_entity(node, candidates)
+        embedding_candidates = self._embedding_candidates(node, candidates)
+        if embedding_candidates:
+            decision = self._judge_same_entity(node, embedding_candidates)
             target_id = _accepted_target_id(
                 decision,
-                {candidate.id for candidate, _ in candidates},
+                {candidate.id for candidate, _ in embedding_candidates},
                 self._merge_confidence_threshold,
             )
             if target_id is not None:

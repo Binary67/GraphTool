@@ -17,7 +17,7 @@ from graphtool.graph.generator import (
 )
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
-from graphtool.graph.resolver import EntityResolutionDecision
+from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
 from graphtool.graph.taxonomy import (
     JsonTaxonomySuggestionStore,
     TaxonomySuggestionRecord,
@@ -380,6 +380,64 @@ def test_synchronize_scopes_reused_node_refs_across_documents(tmp_path):
         f"{first_chunk_id}::node-0001": "OpenAI",
         f"{second_chunk_id}::node-0001": "Anthropic",
     }
+
+
+def test_rebuild_knowledge_base_resolves_only_across_document_graphs(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    graph_store.save(
+        KnowledgeGraph(
+            nodes=[
+                Node(id="alpha", label="Alpha", type="Concept"),
+                Node(id="beta", label="Beta", type="Concept"),
+            ],
+            edges=[],
+            metadata=GraphMetadata(
+                source="docs/a.md",
+                content_hash="hash-a",
+                created_at=created_at,
+            ),
+        )
+    )
+    graph_store.save(
+        KnowledgeGraph(
+            nodes=[Node(id="gamma", label="Gamma", type="Concept")],
+            edges=[],
+            metadata=GraphMetadata(
+                source="docs/b.md",
+                content_hash="hash-b",
+                created_at=created_at,
+            ),
+        )
+    )
+    llm = FakeSemanticLLM(
+        responses=[],
+        decisions=[],
+        vectors={
+            "Alpha": [1.0, 0.0, 0.0],
+            "Beta": [0.0, 1.0, 0.0],
+            "Gamma": [0.0, 0.0, 1.0],
+        },
+    )
+    resolver = SemanticEntityResolver(
+        llm,
+        llm,
+        min_candidate_similarity=1.1,
+    )
+
+    graph = rebuild_knowledge_base(
+        graph_store,
+        knowledge_base_store,
+        resolver=resolver,
+    )
+
+    assert {node.id for node in graph.nodes} == {"alpha", "beta", "gamma"}
+    assert llm.embedding_calls == [
+        "label: Gamma\ntype: Concept",
+        "label: Alpha\ntype: Concept",
+        "label: Beta\ntype: Concept",
+    ]
 
 
 def test_synchronize_documents_updates_cached_knowledge_base_semantically(

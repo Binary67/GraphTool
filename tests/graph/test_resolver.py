@@ -142,6 +142,128 @@ def test_resolver_embeds_only_after_canonical_candidates_exist():
     assert any("label: First" in call for call in embedding.calls[1:])
 
 
+def test_combine_into_empty_does_not_resolve_nodes_within_document_graph():
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient(
+        {
+            "First": [1.0, 0.0],
+            "Second": [1.0, 0.0],
+        }
+    )
+    resolver = SemanticEntityResolver(llm, embedding)
+
+    graph = resolver.combine_into(
+        None,
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="first", label="First", type="Concept"),
+                    Node(id="second", label="Second", type="Concept"),
+                ],
+                edges=[],
+            )
+        ],
+    )
+
+    assert {node.id for node in graph.nodes} == {"first", "second"}
+    assert llm.calls == []
+    assert embedding.calls == []
+
+
+def test_combine_into_uses_only_completed_graphs_as_candidates():
+    llm = FakeLLM()
+    embedding = FakeEmbeddingClient(
+        {
+            "Existing": [1.0, 0.0, 0.0],
+            "Alpha": [0.0, 1.0, 0.0],
+            "Beta": [0.0, 0.0, 1.0],
+        }
+    )
+    resolver = SemanticEntityResolver(
+        llm,
+        embedding,
+        min_candidate_similarity=1.1,
+    )
+
+    graph = resolver.combine_into(
+        None,
+        [
+            KnowledgeGraph(
+                nodes=[Node(id="existing", label="Existing", type="Concept")],
+                edges=[],
+            ),
+            KnowledgeGraph(
+                nodes=[
+                    Node(id="alpha", label="Alpha", type="Concept"),
+                    Node(id="beta", label="Beta", type="Concept"),
+                ],
+                edges=[],
+            ),
+        ],
+    )
+
+    assert {node.id for node in graph.nodes} == {"existing", "alpha", "beta"}
+    assert llm.calls == []
+    assert embedding.calls == [
+        "label: Alpha\ntype: Concept",
+        "label: Existing\ntype: Concept",
+        "label: Beta\ntype: Concept",
+    ]
+
+
+def test_combine_into_uses_updated_existing_candidates_for_each_node():
+    llm = FakeLLM(
+        [
+            EntityResolutionDecision(
+                decision="merge",
+                target_node_id="openai",
+                confidence=0.95,
+            ),
+            EntityResolutionDecision(
+                decision="merge",
+                target_node_id="openai",
+                confidence=0.95,
+            ),
+        ]
+    )
+    embedding = FakeEmbeddingClient(
+        {
+            "OpenAI": [1.0, 0.0],
+        }
+    )
+    resolver = SemanticEntityResolver(llm, embedding)
+    existing = KnowledgeGraph(
+        nodes=[Node(id="openai", label="OpenAI", type="Organization")],
+        edges=[],
+    )
+
+    graph = resolver.combine_into(
+        existing,
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="openai-organization",
+                        label="OpenAI organization",
+                        type="Organization",
+                    ),
+                    Node(
+                        id="openai-company",
+                        label="OpenAI company",
+                        type="Organization",
+                    ),
+                ],
+                edges=[],
+            )
+        ],
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].aliases == ["OpenAI organization", "OpenAI company"]
+    assert len(llm.calls) == 2
+    assert "OpenAI organization" in llm.calls[1][0][1].content
+
+
 def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
     llm = FakeLLM(
         [

@@ -229,7 +229,7 @@ def _combine_knowledge_graphs(
 ) -> KnowledgeGraph:
     if resolver is None:
         return combine_knowledge_graphs(graphs)
-    return resolver.combine(graphs)
+    return resolver.combine_into(None, graphs)
 
 
 def _make_semantic_resolver(
