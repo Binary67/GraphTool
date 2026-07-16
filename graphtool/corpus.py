@@ -70,7 +70,6 @@ def synchronize_documents(
     chunk_store: JsonChunkStore,
     llm: LLMClient,
     *,
-    max_chars: int = 3000,
     knowledge_base_store: JsonKnowledgeBaseStore,
     graph_embedding_store: JsonGraphEmbeddingStore | None = None,
     knowledge_base_embedding_store: JsonEmbeddingStore | None = None,
@@ -110,7 +109,7 @@ def synchronize_documents(
     prepared = []
     for source in [*added_sources, *changed_sources]:
         markdown = documents[source]
-        chunks = chunk_markdown(markdown, source, max_chars=max_chars)
+        chunks = chunk_markdown(markdown, source)
         resolver = _make_semantic_resolver(
             llm,
             graph_embedding_store,

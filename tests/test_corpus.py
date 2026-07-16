@@ -633,14 +633,16 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
         },
     )
     new_source = "docs/new.md"
+    new_markdown = (
+        "# OpenAI organization\nFirst mention.\n\n"
+        f"{'Context. ' * 375}\n\n"
+        "# OpenAI company\nSecond mention."
+    )
 
     synchronize_documents(
         {
             "docs/existing.md": "# Existing\nOpenAI.",
-            new_source: (
-                "# OpenAI organization\nFirst mention.\n\n"
-                "# OpenAI company\nSecond mention."
-            )
+            new_source: new_markdown,
         },
         graph_store,
         chunk_store,

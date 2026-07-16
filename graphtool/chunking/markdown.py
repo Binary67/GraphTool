@@ -4,33 +4,80 @@ from graphtool.chunking.types import Chunk
 from graphtool.source import source_key
 
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_TARGET_CHARS = 3000
+_MAX_CHARS = 6000
+_SECTION_SEPARATOR = "\n\n"
 
 
 def chunk_markdown(
     markdown: str,
     source: str,
-    max_chars: int = 3000,
 ) -> list[Chunk]:
-    if max_chars < 1:
-        raise ValueError("max_chars must be positive")
-
     sections = _split_sections(markdown)
-    chunks: list[Chunk] = []
+    fragments = [
+        (text, heading_path)
+        for section_text, heading_path in sections
+        for text in _split_text(section_text, _MAX_CHARS)
+        if _has_content(text)
+    ]
+    packed = _pack_fragments(fragments)
     key = source_key(source)
 
-    for section_text, heading_path in sections:
-        for text in _split_text(section_text, max_chars):
-            chunks.append(
-                Chunk(
-                    id=f"{key}-chunk-{len(chunks):04d}",
-                    source=source,
-                    index=len(chunks),
-                    text=text,
-                    heading_path=heading_path,
-                )
-            )
+    return [
+        Chunk(
+            id=f"{key}-chunk-{index:04d}",
+            source=source,
+            index=index,
+            text=text,
+            heading_path=heading_path,
+        )
+        for index, (text, heading_path) in enumerate(packed)
+    ]
 
-    return chunks
+
+def _pack_fragments(
+    fragments: list[tuple[str, list[str]]],
+) -> list[tuple[str, list[str]]]:
+    packed: list[tuple[str, list[str]]] = []
+    current_text = ""
+    current_heading_path: list[str] = []
+
+    for text, heading_path in fragments:
+        if not current_text:
+            current_text = text
+            current_heading_path = list(heading_path)
+            continue
+
+        combined_text = f"{current_text}{_SECTION_SEPARATOR}{text}"
+        if len(current_text) < _TARGET_CHARS and len(combined_text) <= _MAX_CHARS:
+            current_text = combined_text
+            current_heading_path = _common_heading_path(
+                current_heading_path,
+                heading_path,
+            )
+            continue
+
+        packed.append((current_text, current_heading_path))
+        current_text = text
+        current_heading_path = list(heading_path)
+
+    if current_text:
+        packed.append((current_text, current_heading_path))
+
+    return packed
+
+
+def _common_heading_path(left: list[str], right: list[str]) -> list[str]:
+    common = []
+    for left_heading, right_heading in zip(left, right):
+        if left_heading != right_heading:
+            break
+        common.append(left_heading)
+    return common
+
+
+def _has_content(text: str) -> bool:
+    return any(character.isalnum() for character in text)
 
 
 def _split_sections(markdown: str) -> list[tuple[str, list[str]]]:
