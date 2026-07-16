@@ -14,6 +14,7 @@ from graphtool.retrieval.types import (
     ChunkRelationship,
     GraphPathHit,
     RetrievalResult,
+    SourceReference,
 )
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "JsonChunkEmbeddingStore",
     "GraphPathHit",
     "RetrievalResult",
+    "SourceReference",
     "retrieve_context",
     "retrieve_graph_context",
     "retrieve_hybrid_context",

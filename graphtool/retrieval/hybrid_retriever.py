@@ -12,6 +12,7 @@ from graphtool.retrieval.graph_retriever import (
 )
 from graphtool.retrieval.retriever import (
     _format_context,
+    _source_references,
     _unique_ordered,
     retrieve_context,
 )
@@ -59,6 +60,7 @@ def retrieve_hybrid_context(
     return RetrievalResult(
         query=query,
         sources=sources,
+        references=_source_references(chunk_hits),
         chunks=chunk_hits,
         graph_paths=graph_result.graph_paths,
         context_text=_format_context(

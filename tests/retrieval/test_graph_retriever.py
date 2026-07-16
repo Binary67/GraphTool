@@ -252,6 +252,7 @@ def test_graph_search_returns_empty_result_without_relevant_seed():
     assert result.graph_paths == []
     assert result.chunks == []
     assert result.sources == []
+    assert result.references == []
     assert result.context_text == "Query: xylophone\n\nEvidence:\n- None"
 
 

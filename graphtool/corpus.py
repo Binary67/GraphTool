@@ -48,23 +48,6 @@ class _TaxonomySuggestionBuffer:
         self.records.extend(records)
 
 
-def load_markdown_documents(
-    directory: str | Path,
-    *,
-    source_root: str | Path,
-) -> dict[str, str]:
-    path = Path(directory)
-    if not path.exists():
-        return {}
-
-    root = Path(source_root)
-    documents = {}
-    for markdown_path in sorted(path.rglob("*.md")):
-        source = markdown_path.relative_to(root).as_posix()
-        documents[source] = markdown_path.read_text()
-    return documents
-
-
 def synchronize_documents(
     documents: Mapping[str, str],
     graph_store: JsonGraphStore,

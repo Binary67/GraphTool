@@ -6,7 +6,6 @@ import pytest
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.types import Chunk
 from graphtool.corpus import (
-    load_markdown_documents,
     rebuild_knowledge_base,
     synchronize_documents,
 )
@@ -191,31 +190,6 @@ def _relationship_graph(
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         ),
     )
-
-
-def test_load_markdown_documents_returns_empty_for_missing_directory(tmp_path):
-    documents = load_markdown_documents(tmp_path / "missing", source_root=tmp_path)
-
-    assert documents == {}
-
-
-def test_load_markdown_documents_reads_nested_markdown_relative_to_source_root(
-    tmp_path,
-):
-    documents_dir = tmp_path / "documents"
-    nested_dir = documents_dir / "guides"
-    nested_dir.mkdir(parents=True)
-    (documents_dir / "b.txt").write_text("ignored")
-    (nested_dir / "z.md").write_text("# Z")
-    (documents_dir / "a.md").write_text("# A")
-
-    documents = load_markdown_documents(documents_dir, source_root=tmp_path)
-
-    assert list(documents) == ["documents/a.md", "documents/guides/z.md"]
-    assert documents == {
-        "documents/a.md": "# A",
-        "documents/guides/z.md": "# Z",
-    }
 
 
 def test_synchronize_documents_skips_unchanged_sources(tmp_path):

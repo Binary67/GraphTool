@@ -18,6 +18,7 @@ from graphtool.retrieval.types import (
     ChunkRelationship,
     GraphPathHit,
     RetrievalResult,
+    SourceReference,
 )
 
 PRIMARY_LABEL_BM25_WEIGHT = 2.0
@@ -92,6 +93,7 @@ def retrieve_context(
     return RetrievalResult(
         query=query,
         sources=sources,
+        references=_source_references(chunk_hits),
         chunks=chunk_hits,
         context_text=_format_context(query, chunk_hits),
     )
@@ -428,6 +430,12 @@ def _format_context(
         for hit in chunk_hits:
             heading = " > ".join(hit.chunk.heading_path)
             metadata = f"{hit.chunk.id} | {hit.chunk.source}"
+            page_reference = _format_page_range(
+                hit.chunk.page_start,
+                hit.chunk.page_end,
+            )
+            if page_reference:
+                metadata = f"{metadata} | {page_reference}"
             if heading:
                 metadata = f"{metadata} | {heading}"
             lines.extend([f"[{metadata}]", hit.chunk.text])
@@ -469,6 +477,51 @@ def _graph_path_text(path: GraphPathHit) -> str:
         else:
             parts.append(f"<--{edge.label}-- {right.label}")
     return " ".join(parts)
+
+
+def _source_references(chunk_hits: Sequence[ChunkHit]) -> list[SourceReference]:
+    ranges_by_source: dict[str, list[tuple[int, int]]] = {}
+    unpaged_sources = set()
+    for hit in chunk_hits:
+        source = hit.chunk.source
+        ranges_by_source.setdefault(source, [])
+        if hit.chunk.page_start is None:
+            unpaged_sources.add(source)
+        else:
+            assert hit.chunk.page_end is not None
+            ranges_by_source[source].append(
+                (hit.chunk.page_start, hit.chunk.page_end)
+            )
+
+    references = []
+    for source, ranges in ranges_by_source.items():
+        if source in unpaged_sources:
+            references.append(SourceReference(source=source))
+            continue
+
+        merged = []
+        for page_start, page_end in sorted(ranges):
+            if merged and page_start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], page_end))
+            else:
+                merged.append((page_start, page_end))
+        references.extend(
+            SourceReference(
+                source=source,
+                page_start=page_start,
+                page_end=page_end,
+            )
+            for page_start, page_end in merged
+        )
+    return references
+
+
+def _format_page_range(page_start: int | None, page_end: int | None) -> str:
+    if page_start is None:
+        return ""
+    if page_start == page_end:
+        return f"p. {page_start}"
+    return f"pp. {page_start}-{page_end}"
 
 
 def _unique_ordered(values: Iterable[str]) -> list[str]:

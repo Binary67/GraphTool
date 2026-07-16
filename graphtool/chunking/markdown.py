@@ -1,12 +1,22 @@
 import re
+from dataclasses import dataclass
 
 from graphtool.chunking.types import Chunk
 from graphtool.source import source_key
 
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_PAGE_MARKER_PATTERN = re.compile(r"^<!--\s*graphtool:page=(\d+)\s*-->$")
 _TARGET_CHARS = 3000
 _MAX_CHARS = 6000
 _SECTION_SEPARATOR = "\n\n"
+
+
+@dataclass(frozen=True)
+class _Fragment:
+    text: str
+    heading_path: list[str]
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 def chunk_markdown(
@@ -15,9 +25,14 @@ def chunk_markdown(
 ) -> list[Chunk]:
     sections = _split_sections(markdown)
     fragments = [
-        (text, heading_path)
-        for section_text, heading_path in sections
-        for text in _split_text(section_text, _MAX_CHARS)
+        _Fragment(
+            text=text,
+            heading_path=section.heading_path,
+            page_start=section.page_start,
+            page_end=section.page_end,
+        )
+        for section in sections
+        for text in _split_text(section.text, _MAX_CHARS)
         if _has_content(text)
     ]
     packed = _pack_fragments(fragments)
@@ -28,41 +43,44 @@ def chunk_markdown(
             id=f"{key}-chunk-{index:04d}",
             source=source,
             index=index,
-            text=text,
-            heading_path=heading_path,
+            text=fragment.text,
+            heading_path=fragment.heading_path,
+            page_start=fragment.page_start,
+            page_end=fragment.page_end,
         )
-        for index, (text, heading_path) in enumerate(packed)
+        for index, fragment in enumerate(packed)
     ]
 
 
 def _pack_fragments(
-    fragments: list[tuple[str, list[str]]],
-) -> list[tuple[str, list[str]]]:
-    packed: list[tuple[str, list[str]]] = []
-    current_text = ""
-    current_heading_path: list[str] = []
+    fragments: list[_Fragment],
+) -> list[_Fragment]:
+    packed: list[_Fragment] = []
+    current: _Fragment | None = None
 
-    for text, heading_path in fragments:
-        if not current_text:
-            current_text = text
-            current_heading_path = list(heading_path)
+    for fragment in fragments:
+        if current is None:
+            current = fragment
             continue
 
-        combined_text = f"{current_text}{_SECTION_SEPARATOR}{text}"
-        if len(current_text) < _TARGET_CHARS and len(combined_text) <= _MAX_CHARS:
-            current_text = combined_text
-            current_heading_path = _common_heading_path(
-                current_heading_path,
-                heading_path,
+        combined_text = f"{current.text}{_SECTION_SEPARATOR}{fragment.text}"
+        if len(current.text) < _TARGET_CHARS and len(combined_text) <= _MAX_CHARS:
+            current = _Fragment(
+                text=combined_text,
+                heading_path=_common_heading_path(
+                    current.heading_path,
+                    fragment.heading_path,
+                ),
+                page_start=_first_page(current.page_start, fragment.page_start),
+                page_end=_last_page(current.page_end, fragment.page_end),
             )
             continue
 
-        packed.append((current_text, current_heading_path))
-        current_text = text
-        current_heading_path = list(heading_path)
+        packed.append(current)
+        current = fragment
 
-    if current_text:
-        packed.append((current_text, current_heading_path))
+    if current is not None:
+        packed.append(current)
 
     return packed
 
@@ -80,16 +98,34 @@ def _has_content(text: str) -> bool:
     return any(character.isalnum() for character in text)
 
 
-def _split_sections(markdown: str) -> list[tuple[str, list[str]]]:
-    sections: list[tuple[str, list[str]]] = []
+def _split_sections(markdown: str) -> list[_Fragment]:
+    sections: list[_Fragment] = []
     heading_stack: list[str] = []
     current_heading_path: list[str] = []
     current_lines: list[str] = []
+    current_page: int | None = None
 
     for line in markdown.splitlines():
+        page_marker = _PAGE_MARKER_PATTERN.match(line)
+        if page_marker:
+            _append_section(
+                sections,
+                current_lines,
+                current_heading_path,
+                current_page,
+            )
+            current_lines = []
+            current_page = int(page_marker.group(1))
+            continue
+
         heading = _HEADING_PATTERN.match(line)
         if heading:
-            _append_section(sections, current_lines, current_heading_path)
+            _append_section(
+                sections,
+                current_lines,
+                current_heading_path,
+                current_page,
+            )
 
             level = len(heading.group(1))
             title = heading.group(2).strip()
@@ -101,18 +137,34 @@ def _split_sections(markdown: str) -> list[tuple[str, list[str]]]:
 
         current_lines.append(line)
 
-    _append_section(sections, current_lines, current_heading_path)
+    _append_section(sections, current_lines, current_heading_path, current_page)
     return sections
 
 
 def _append_section(
-    sections: list[tuple[str, list[str]]],
+    sections: list[_Fragment],
     lines: list[str],
     heading_path: list[str],
+    page: int | None,
 ) -> None:
     text = "\n".join(lines).strip()
     if text:
-        sections.append((text, list(heading_path)))
+        sections.append(
+            _Fragment(
+                text=text,
+                heading_path=list(heading_path),
+                page_start=page,
+                page_end=page,
+            )
+        )
+
+
+def _first_page(left: int | None, right: int | None) -> int | None:
+    return left if left is not None else right
+
+
+def _last_page(left: int | None, right: int | None) -> int | None:
+    return right if right is not None else left
 
 
 def _split_text(text: str, max_chars: int) -> list[str]:

@@ -1,10 +1,20 @@
-from graphtool.corpus import load_markdown_documents, synchronize_documents
+from graphtool.corpus import synchronize_documents
+from graphtool.ingestion import load_documents
 from graphtool.llm import load_azure_openai_config
+from graphtool.retrieval import SourceReference
 from graphtool.run_logging import configure_run_logger
 from graphtool.runtime import DEFAULT_MAX_LOG_FILES, create_runtime, default_paths
 from graphtool.visualization import export_knowledge_base_visualizations
 
 QUERY = "What can Claude Code do?"
+
+
+def _format_source_reference(reference: SourceReference) -> str:
+    if reference.page_start is None:
+        return reference.source
+    if reference.page_start == reference.page_end:
+        return f"{reference.source} (p. {reference.page_start})"
+    return f"{reference.source} (pp. {reference.page_start}-{reference.page_end})"
 
 
 def main() -> None:
@@ -15,11 +25,13 @@ def main() -> None:
     try:
         config = load_azure_openai_config()
         runtime = create_runtime(config, paths=paths)
-        documents = load_markdown_documents(
+        documents = load_documents(
             runtime.paths.documents_dir,
             source_root=runtime.paths.root,
+            pdf_llm=runtime.fast_llm,
+            pdf_cache_dir=runtime.paths.pdf_conversions_dir,
         )
-        logger.info("Loaded %s markdown documents", len(documents))
+        logger.info("Loaded %s documents", len(documents))
 
         sync_result = synchronize_documents(
             documents,
@@ -57,8 +69,8 @@ def main() -> None:
 
         search_results = [
             ("Direct chunk search", runtime.search(QUERY)),
-            ("Graph path search", runtime.search_graph(QUERY)),
-            ("Hybrid search", runtime.search_hybrid(QUERY)),
+            # ("Graph path search", runtime.search_graph(QUERY)),
+            # ("Hybrid search", runtime.search_hybrid(QUERY)),
         ]
         for search_name, result in search_results:
             logger.info(
@@ -67,7 +79,11 @@ def main() -> None:
                 len(result.sources),
             )
             print(search_name)
-            print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")
+            references = ", ".join(
+                _format_source_reference(reference)
+                for reference in result.references
+            )
+            print(f"Sources: {references or 'None'}")
             print()
             print(result.context_text)
             print()

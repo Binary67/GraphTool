@@ -93,3 +93,27 @@ def test_chunk_markdown_uses_source_path_in_chunk_ids():
     second = chunk_markdown("# Guide\nSecond.", "docs/user/guide.md")
 
     assert first[0].id != second[0].id
+
+
+def test_chunk_markdown_consumes_page_markers_and_tracks_page_range():
+    markdown = (
+        "<!-- graphtool:page=3 -->\n\n"
+        "# Guide\nFirst page.\n\n"
+        "<!-- graphtool:page=4 -->\n\n"
+        "Second page."
+    )
+
+    chunks = chunk_markdown(markdown, "documents/guide.pdf")
+
+    assert len(chunks) == 1
+    assert chunks[0].text == "# Guide\nFirst page.\n\nSecond page."
+    assert chunks[0].heading_path == ["Guide"]
+    assert chunks[0].page_start == 3
+    assert chunks[0].page_end == 4
+
+
+def test_chunk_markdown_leaves_pages_unset_for_markdown_sources():
+    chunks = chunk_markdown("# Guide\nText.", "documents/guide.md")
+
+    assert chunks[0].page_start is None
+    assert chunks[0].page_end is None

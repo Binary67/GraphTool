@@ -30,6 +30,7 @@ DEFAULT_MAX_LOG_FILES = 3
 class GraphToolPaths:
     root: Path
     documents_dir: Path
+    pdf_conversions_dir: Path
     chunks_dir: Path
     chunk_extractions_dir: Path
     graphs_dir: Path
@@ -122,6 +123,7 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
     return GraphToolPaths(
         root=project_root,
         documents_dir=project_root / "documents",
+        pdf_conversions_dir=data_dir / "pdf_conversions",
         chunks_dir=data_dir / "chunks",
         chunk_extractions_dir=data_dir / "chunk_extractions",
         graphs_dir=data_dir / "graphs",

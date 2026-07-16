@@ -13,6 +13,7 @@ from graphtool.retrieval.retriever import (
     _build_chunk_graph_index,
     _cosine_similarity,
     _format_context,
+    _source_references,
     _unique_ordered,
 )
 from graphtool.retrieval.types import GraphPathHit, RetrievalResult
@@ -115,6 +116,7 @@ def retrieve_graph_context(
     return RetrievalResult(
         query=query,
         sources=sources,
+        references=_source_references(chunk_hits),
         chunks=chunk_hits,
         graph_paths=graph_paths,
         context_text=_format_context(query, chunk_hits, graph_paths),

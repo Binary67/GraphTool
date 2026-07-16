@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import main as main_module
-from graphtool.retrieval import RetrievalResult
+from graphtool.retrieval import RetrievalResult, SourceReference
 
 
 class FakeRuntime:
@@ -36,15 +36,29 @@ def _result(query: str, source: str, context: str) -> RetrievalResult:
     return RetrievalResult(
         query=query,
         sources=[source],
+        references=[SourceReference(source=source)],
         chunks=[],
         context_text=context,
     )
 
 
-def test_main_runs_and_prints_all_search_modes(monkeypatch, capsys, tmp_path):
+def test_format_source_reference_includes_pdf_page_range():
+    reference = SourceReference(
+        source="documents/manual.pdf",
+        page_start=12,
+        page_end=14,
+    )
+
+    assert main_module._format_source_reference(reference) == (
+        "documents/manual.pdf (pp. 12-14)"
+    )
+
+
+def test_main_runs_and_prints_enabled_search_modes(monkeypatch, capsys, tmp_path):
     paths = SimpleNamespace(
         root=tmp_path,
         documents_dir=tmp_path / "documents",
+        pdf_conversions_dir=tmp_path / "pdf-conversions",
         dropped_edges_path=tmp_path / "dropped_edges.jsonl",
         logs_dir=tmp_path / "logs",
         visualizations_dir=tmp_path / "visualizations",
@@ -72,7 +86,7 @@ def test_main_runs_and_prints_all_search_modes(monkeypatch, capsys, tmp_path):
     )
     monkeypatch.setattr(
         main_module,
-        "load_markdown_documents",
+        "load_documents",
         Mock(return_value={"docs/guide.md": "# Guide\nText."}),
     )
     monkeypatch.setattr(
@@ -96,17 +110,13 @@ def test_main_runs_and_prints_all_search_modes(monkeypatch, capsys, tmp_path):
     main_module.main()
 
     output = capsys.readouterr().out
-    assert runtime.search_calls == [
-        ("direct", main_module.QUERY),
-        ("graph", main_module.QUERY),
-        ("hybrid", main_module.QUERY),
-    ]
-    assert output.index("Direct chunk search") < output.index("Graph path search")
-    assert output.index("Graph path search") < output.index("Hybrid search")
+    main_module.load_documents.assert_called_once_with(
+        paths.documents_dir,
+        source_root=paths.root,
+        pdf_llm=runtime.fast_llm,
+        pdf_cache_dir=paths.pdf_conversions_dir,
+    )
+    assert runtime.search_calls == [("direct", main_module.QUERY)]
     assert "Sources: direct.md" in output
-    assert "Sources: graph.md" in output
-    assert "Sources: hybrid.md" in output
     assert "Direct context." in output
-    assert "Graph context." in output
-    assert "Hybrid context." in output
     assert f"- {visualization_path}" in output

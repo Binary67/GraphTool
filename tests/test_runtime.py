@@ -47,6 +47,7 @@ def test_default_paths_match_project_layout(tmp_path):
 
     assert paths.root == tmp_path
     assert paths.documents_dir == tmp_path / "documents"
+    assert paths.pdf_conversions_dir == tmp_path / "data" / "pdf_conversions"
     assert paths.chunks_dir == tmp_path / "data" / "chunks"
     assert paths.chunk_extractions_dir == tmp_path / "data" / "chunk_extractions"
     assert paths.graphs_dir == tmp_path / "data" / "graphs"

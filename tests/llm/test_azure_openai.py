@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 from graphtool.llm.azure_openai import AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
-from graphtool.llm.types import LLMMessage
+from graphtool.llm.types import LLMImageContent, LLMMessage, LLMTextContent
 
 
 class FakeResponses:
@@ -136,6 +136,46 @@ def test_generate_structured_uses_responses_parse(monkeypatch):
             "model": "text-deployment",
             "input": [
                 {"role": "user", "content": "Extract the person."},
+            ],
+            "text_format": Person,
+        }
+    ]
+
+
+def test_generate_structured_serializes_multimodal_content(monkeypatch):
+    FakeOpenAI.instances = []
+    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
+    config = _config()
+    client = AzureOpenAIClient(config, text_deployment=config.fast_deployment)
+
+    client.generate_structured(
+        [
+            LLMMessage(
+                role="user",
+                content=(
+                    LLMTextContent(text="Convert page 1."),
+                    LLMImageContent(data=b"png-bytes"),
+                ),
+            )
+        ],
+        Person,
+    )
+
+    assert FakeOpenAI.instances[0].responses.parse_calls == [
+        {
+            "model": "fast-deployment",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Convert page 1."},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,cG5nLWJ5dGVz",
+                            "detail": "high",
+                        },
+                    ],
+                }
             ],
             "text_format": Person,
         }

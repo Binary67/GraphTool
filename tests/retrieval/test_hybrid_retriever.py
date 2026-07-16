@@ -159,6 +159,11 @@ def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
     assert result.chunks[1].score == pytest.approx(1 / 61)
     assert result.chunks[2].score == pytest.approx(1 / 62)
     assert result.sources == ["shared.md", "graph.md", "direct.md"]
+    assert [reference.source for reference in result.references] == [
+        "shared.md",
+        "graph.md",
+        "direct.md",
+    ]
     assert result.graph_paths == [graph_path]
     assert [hit.chunk.id for hit in limited.chunks] == ["overlap", "graph-only"]
 

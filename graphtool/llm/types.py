@@ -1,11 +1,26 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
+
+
+@dataclass(frozen=True)
+class LLMTextContent:
+    text: str
+
+
+@dataclass(frozen=True)
+class LLMImageContent:
+    data: bytes
+    media_type: Literal["image/png"] = "image/png"
+    detail: Literal["low", "high", "auto"] = "high"
+
+
+LLMContentPart: TypeAlias = LLMTextContent | LLMImageContent
 
 
 @dataclass(frozen=True)
 class LLMMessage:
     role: Literal["system", "user", "assistant"]
-    content: str
+    content: str | tuple[LLMContentPart, ...]
 
 
 @dataclass(frozen=True)

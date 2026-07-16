@@ -522,4 +522,38 @@ def test_retrieve_context_returns_empty_result_for_no_matches():
 
     assert result.chunks == []
     assert result.sources == []
+    assert result.references == []
     assert result.context_text == "Query: xylophone\n\nEvidence:\n- None"
+
+
+def test_retrieve_context_merges_pdf_page_references_and_formats_evidence():
+    chunks = [
+        Chunk(
+            id="manual-0000",
+            source="manual.pdf",
+            index=0,
+            text="Deployment guidance.",
+            page_start=4,
+            page_end=5,
+        ),
+        Chunk(
+            id="manual-0001",
+            source="manual.pdf",
+            index=1,
+            text="Deployment checklist.",
+            page_start=6,
+            page_end=6,
+        ),
+    ]
+
+    result = retrieve_context(
+        "deployment",
+        KnowledgeGraph(nodes=[], edges=[]),
+        chunks,
+    )
+
+    assert [reference.model_dump() for reference in result.references] == [
+        {"source": "manual.pdf", "page_start": 4, "page_end": 6}
+    ]
+    assert "[manual-0000 | manual.pdf | pp. 4-5]" in result.context_text
+    assert "[manual-0001 | manual.pdf | p. 6]" in result.context_text

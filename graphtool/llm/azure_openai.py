@@ -1,10 +1,16 @@
+import base64
 from collections.abc import Sequence
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from openai import OpenAI
 
 from graphtool.llm.config import AzureOpenAIConfig
-from graphtool.llm.types import LLMMessage, LLMTextResponse
+from graphtool.llm.types import (
+    LLMImageContent,
+    LLMMessage,
+    LLMTextContent,
+    LLMTextResponse,
+)
 
 T = TypeVar("T")
 
@@ -59,14 +65,39 @@ class AzureOpenAIClient:
         return vectors
 
 
-def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, str]]:
+def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, Any]]:
     return [
         {
             "role": message.role,
-            "content": message.content,
+            "content": _to_response_content(message),
         }
         for message in messages
     ]
+
+
+def _to_response_content(message: LLMMessage) -> str | list[dict[str, str]]:
+    if isinstance(message.content, str):
+        return message.content
+
+    content = []
+    for part in message.content:
+        if isinstance(part, LLMTextContent):
+            content.append({"type": "input_text", "text": part.text})
+            continue
+
+        if isinstance(part, LLMImageContent):
+            encoded = base64.b64encode(part.data).decode("ascii")
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{part.media_type};base64,{encoded}",
+                    "detail": part.detail,
+                }
+            )
+            continue
+
+        raise TypeError(f"Unsupported LLM content part: {type(part).__name__}")
+    return content
 
 
 def _batches(values: Sequence[str], batch_size: int) -> list[list[str]]:
