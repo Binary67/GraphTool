@@ -55,14 +55,23 @@ def main() -> None:
         )
         logger.info("Exported %s visualizations", len(visualization_paths))
 
-        logger.info("Searching knowledge base")
-        result = runtime.search(QUERY)
-        logger.info("Search completed with %s sources", len(result.sources))
+        search_results = [
+            ("Direct chunk search", runtime.search(QUERY)),
+            ("Graph path search", runtime.search_graph(QUERY)),
+            ("Hybrid search", runtime.search_hybrid(QUERY)),
+        ]
+        for search_name, result in search_results:
+            logger.info(
+                "%s completed with %s sources",
+                search_name,
+                len(result.sources),
+            )
+            print(search_name)
+            print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")
+            print()
+            print(result.context_text)
+            print()
 
-        print(f"Sources: {', '.join(result.sources) if result.sources else 'None'}")
-        print()
-        print(result.context_text)
-        print()
         print("Visualizations:")
         for path in visualization_paths:
             print(f"- {path}")

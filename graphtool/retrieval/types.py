@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, Node
@@ -17,8 +17,16 @@ class ChunkHit(BaseModel):
     linked_relationships: list[ChunkRelationship]
 
 
+class GraphPathHit(BaseModel):
+    score: float
+    nodes: list[Node]
+    edges: list[Edge]
+    chunk_ids: list[str]
+
+
 class RetrievalResult(BaseModel):
     query: str
     sources: list[str]
     chunks: list[ChunkHit]
+    graph_paths: list[GraphPathHit] = Field(default_factory=list)
     context_text: str

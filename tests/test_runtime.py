@@ -1,7 +1,7 @@
 import pytest
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.types import KnowledgeGraph, Node
+from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.runtime import create_runtime, default_paths
 
@@ -155,6 +155,82 @@ def test_search_uses_runtime_embeddings_and_cache(monkeypatch, tmp_path):
     assert [hit.chunk.id for hit in result.chunks] == ["deploy-chunk-0000"]
     assert runtime.fast_llm.embedding_calls
     assert runtime.chunk_embedding_store.exists() is True
+
+
+def test_graph_and_hybrid_search_are_wired_through_runtime(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    chunks = [
+        Chunk(
+            id="alpha-beta",
+            source="docs/graph.md",
+            index=0,
+            text="Alpha uses Beta.",
+        ),
+        Chunk(
+            id="beta-gamma",
+            source="docs/graph.md",
+            index=1,
+            text="Beta depends on Gamma.",
+        ),
+    ]
+    runtime.chunk_store.save("docs/graph.md", chunks)
+    runtime.knowledge_base_store.save(
+        KnowledgeGraph(
+            nodes=[
+                Node(
+                    id="alpha",
+                    label="Alpha",
+                    type="System",
+                    chunk_ids=["alpha-beta"],
+                ),
+                Node(
+                    id="beta",
+                    label="Beta",
+                    type="Component",
+                    chunk_ids=["alpha-beta", "beta-gamma"],
+                ),
+                Node(
+                    id="gamma",
+                    label="Gamma",
+                    type="Service",
+                    chunk_ids=["beta-gamma"],
+                ),
+            ],
+            edges=[
+                Edge(
+                    id="alpha-beta-edge",
+                    source="alpha",
+                    target="beta",
+                    label="uses",
+                    chunk_ids=["alpha-beta"],
+                ),
+                Edge(
+                    id="beta-gamma-edge",
+                    source="beta",
+                    target="gamma",
+                    label="depends on",
+                    chunk_ids=["beta-gamma"],
+                ),
+            ],
+        )
+    )
+
+    graph_result = runtime.search_graph(
+        "How is Alpha related to Gamma?",
+        top_paths=1,
+    )
+    hybrid_result = runtime.search_hybrid(
+        "How is Alpha related to Gamma?",
+        top_paths=1,
+    )
+
+    assert len(graph_result.graph_paths) == 1
+    assert len(graph_result.graph_paths[0].edges) == 2
+    assert len(hybrid_result.graph_paths) == 1
+    assert {hit.chunk.id for hit in hybrid_result.chunks} == {
+        "alpha-beta",
+        "beta-gamma",
+    }
 
 
 def test_search_requires_synchronized_knowledge_base(monkeypatch, tmp_path):

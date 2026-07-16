@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graphtool.chunking import JsonChunkStore
+from graphtool.chunking.types import Chunk
 from graphtool.graph import (
     JsonChunkExtractionStore,
     JsonEmbeddingStore,
@@ -9,6 +10,7 @@ from graphtool.graph import (
     JsonGraphStore,
     JsonKnowledgeBaseStore,
     JsonTaxonomySuggestionStore,
+    KnowledgeGraph,
 )
 from graphtool.llm import AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
@@ -16,6 +18,8 @@ from graphtool.retrieval import (
     JsonChunkEmbeddingStore,
     RetrievalResult,
     retrieve_context,
+    retrieve_graph_context,
+    retrieve_hybrid_context,
 )
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -53,19 +57,63 @@ class GraphToolRuntime:
     fast_llm: AzureOpenAIClient
 
     def search(self, query: str, *, top_chunks: int = 5) -> RetrievalResult:
-        if not self.knowledge_base_store.exists():
-            raise FileNotFoundError(
-                "Knowledge base not found. Synchronize documents before searching."
-            )
-
+        graph, chunks = self._search_inputs()
         return retrieve_context(
             query,
-            self.knowledge_base_store.load(),
-            self.chunk_store.load_all(),
+            graph,
+            chunks,
             top_chunks=top_chunks,
             embedding_client=self.fast_llm,
             chunk_embedding_store=self.chunk_embedding_store,
         )
+
+    def search_graph(
+        self,
+        query: str,
+        *,
+        max_hops: int = 2,
+        top_paths: int = 5,
+        top_chunks: int = 5,
+    ) -> RetrievalResult:
+        graph, chunks = self._search_inputs()
+        return retrieve_graph_context(
+            query,
+            graph,
+            chunks,
+            max_hops=max_hops,
+            top_paths=top_paths,
+            top_chunks=top_chunks,
+            embedding_client=self.fast_llm,
+            node_embedding_store=self.knowledge_base_embedding_store,
+        )
+
+    def search_hybrid(
+        self,
+        query: str,
+        *,
+        max_hops: int = 2,
+        top_paths: int = 5,
+        top_chunks: int = 5,
+    ) -> RetrievalResult:
+        graph, chunks = self._search_inputs()
+        return retrieve_hybrid_context(
+            query,
+            graph,
+            chunks,
+            max_hops=max_hops,
+            top_paths=top_paths,
+            top_chunks=top_chunks,
+            embedding_client=self.fast_llm,
+            chunk_embedding_store=self.chunk_embedding_store,
+            node_embedding_store=self.knowledge_base_embedding_store,
+        )
+
+    def _search_inputs(self) -> tuple[KnowledgeGraph, list[Chunk]]:
+        if not self.knowledge_base_store.exists():
+            raise FileNotFoundError(
+                "Knowledge base not found. Synchronize documents before searching."
+            )
+        return self.knowledge_base_store.load(), self.chunk_store.load_all()
 
 
 def default_paths(root: str | Path | None = None) -> GraphToolPaths:

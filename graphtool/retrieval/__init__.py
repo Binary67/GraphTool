@@ -6,10 +6,13 @@ from graphtool.retrieval.embedding_store import (
     ChunkEmbeddingStore,
     JsonChunkEmbeddingStore,
 )
+from graphtool.retrieval.graph_retriever import retrieve_graph_context
+from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
 from graphtool.retrieval.retriever import retrieve_context
 from graphtool.retrieval.types import (
     ChunkHit,
     ChunkRelationship,
+    GraphPathHit,
     RetrievalResult,
 )
 
@@ -21,6 +24,9 @@ __all__ = [
     "ChunkEmbeddingRecord",
     "ChunkEmbeddingStore",
     "JsonChunkEmbeddingStore",
+    "GraphPathHit",
     "RetrievalResult",
     "retrieve_context",
+    "retrieve_graph_context",
+    "retrieve_hybrid_context",
 ]

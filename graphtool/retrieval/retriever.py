@@ -16,6 +16,7 @@ from graphtool.retrieval.embedding_store import (
 from graphtool.retrieval.types import (
     ChunkHit,
     ChunkRelationship,
+    GraphPathHit,
     RetrievalResult,
 )
 
@@ -415,37 +416,59 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     ) / (left_norm * right_norm)
 
 
-def _format_context(query: str, chunk_hits: Sequence[ChunkHit]) -> str:
+def _format_context(
+    query: str,
+    chunk_hits: Sequence[ChunkHit],
+    graph_paths: Sequence[GraphPathHit] = (),
+) -> str:
     lines = [f"Query: {query}", "", "Evidence:"]
     if not chunk_hits:
         lines.append("- None")
-        return "\n".join(lines)
+    else:
+        for hit in chunk_hits:
+            heading = " > ".join(hit.chunk.heading_path)
+            metadata = f"{hit.chunk.id} | {hit.chunk.source}"
+            if heading:
+                metadata = f"{metadata} | {heading}"
+            lines.extend([f"[{metadata}]", hit.chunk.text])
 
-    for hit in chunk_hits:
-        heading = " > ".join(hit.chunk.heading_path)
-        metadata = f"{hit.chunk.id} | {hit.chunk.source}"
-        if heading:
-            metadata = f"{metadata} | {heading}"
-        lines.extend([f"[{metadata}]", hit.chunk.text])
+            if hit.linked_nodes:
+                lines.append("Linked entities:")
+                lines.extend(f"- {_node_text(node)}" for node in hit.linked_nodes)
 
-        if hit.linked_nodes:
-            lines.append("Linked entities:")
-            lines.extend(f"- {_node_text(node)}" for node in hit.linked_nodes)
-
-        if hit.linked_relationships:
-            lines.append("Linked relationships:")
-            lines.extend(
-                "- " + _relationship_text(
-                    relationship.edge,
-                    relationship.source_node,
-                    relationship.target_node,
+            if hit.linked_relationships:
+                lines.append("Linked relationships:")
+                lines.extend(
+                    "- " + _relationship_text(
+                        relationship.edge,
+                        relationship.source_node,
+                        relationship.target_node,
+                    )
+                    for relationship in hit.linked_relationships
                 )
-                for relationship in hit.linked_relationships
-            )
 
-        lines.append("")
+            lines.append("")
+
+    if graph_paths:
+        lines.extend(["", "Graph paths:"])
+        for path in graph_paths:
+            lines.append(f"- {_graph_path_text(path)}")
+            if path.chunk_ids:
+                lines.append(f"  Evidence chunks: {', '.join(path.chunk_ids)}")
 
     return "\n".join(lines).rstrip()
+
+
+def _graph_path_text(path: GraphPathHit) -> str:
+    parts = [path.nodes[0].label]
+    for index, edge in enumerate(path.edges):
+        left = path.nodes[index]
+        right = path.nodes[index + 1]
+        if edge.source == left.id and edge.target == right.id:
+            parts.append(f"--{edge.label}--> {right.label}")
+        else:
+            parts.append(f"<--{edge.label}-- {right.label}")
+    return " ".join(parts)
 
 
 def _unique_ordered(values: Iterable[str]) -> list[str]:
