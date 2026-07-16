@@ -84,11 +84,12 @@ def test_constructs_openai_client_with_exact_config(monkeypatch):
     monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
     config = _config()
 
-    AzureOpenAIClient(config, text_deployment=config.fast_deployment)
+    client = AzureOpenAIClient(config, text_deployment=config.fast_deployment)
 
     assert len(FakeOpenAI.instances) == 1
     assert FakeOpenAI.instances[0].base_url == config.endpoint
     assert FakeOpenAI.instances[0].api_key == config.api_key
+    assert client.text_model == config.fast_deployment
 
 
 def test_generate_text_uses_responses_create(monkeypatch):

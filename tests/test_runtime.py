@@ -48,6 +48,7 @@ def test_default_paths_match_project_layout(tmp_path):
     assert paths.root == tmp_path
     assert paths.documents_dir == tmp_path / "documents"
     assert paths.chunks_dir == tmp_path / "data" / "chunks"
+    assert paths.chunk_extractions_dir == tmp_path / "data" / "chunk_extractions"
     assert paths.graphs_dir == tmp_path / "data" / "graphs"
     assert paths.graph_embeddings_dir == tmp_path / "data" / "graph_embeddings"
     assert paths.chunk_embeddings_path == tmp_path / "data" / "chunk_embeddings.json"
@@ -75,6 +76,7 @@ def test_create_runtime_uses_fast_deployment_for_runtime_llm(monkeypatch, tmp_pa
     assert runtime.fast_llm is FakeAzureOpenAIClient.instances[0]
     assert runtime.fast_llm.config is config
     assert runtime.fast_llm.text_deployment == "fast-deployment"
+    assert runtime.chunk_extraction_store.load("docs/missing.md") == {}
 
 
 def test_search_uses_combined_graph_all_chunks_and_top_chunks(monkeypatch, tmp_path):

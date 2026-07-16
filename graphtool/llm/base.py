@@ -9,6 +9,11 @@ T = TypeVar("T")
 class LLMClient(Protocol):
     """Common interface implemented by all LLM providers."""
 
+    @property
+    def text_model(self) -> str:
+        """Return the text-generation model identifier."""
+        ...
+
     def generate_text(self, messages: Sequence[LLMMessage]) -> LLMTextResponse:
         """Generate plain text from a sequence of messages."""
         ...

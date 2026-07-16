@@ -19,6 +19,10 @@ class AzureOpenAIClient:
     def embedding_model(self) -> str:
         return self._config.embedding_deployment
 
+    @property
+    def text_model(self) -> str:
+        return self._text_deployment
+
     def generate_text(self, messages: Sequence[LLMMessage]) -> LLMTextResponse:
         response = self._client.responses.create(
             model=self._text_deployment,

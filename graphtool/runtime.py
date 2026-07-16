@@ -3,6 +3,7 @@ from pathlib import Path
 
 from graphtool.chunking import JsonChunkStore
 from graphtool.graph import (
+    JsonChunkExtractionStore,
     JsonEmbeddingStore,
     JsonGraphEmbeddingStore,
     JsonGraphStore,
@@ -26,6 +27,7 @@ class GraphToolPaths:
     root: Path
     documents_dir: Path
     chunks_dir: Path
+    chunk_extractions_dir: Path
     graphs_dir: Path
     graph_embeddings_dir: Path
     chunk_embeddings_path: Path
@@ -46,6 +48,7 @@ class GraphToolRuntime:
     knowledge_base_embedding_store: JsonEmbeddingStore
     taxonomy_suggestion_store: JsonTaxonomySuggestionStore
     chunk_store: JsonChunkStore
+    chunk_extraction_store: JsonChunkExtractionStore
     chunk_embedding_store: JsonChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
 
@@ -72,6 +75,7 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
         root=project_root,
         documents_dir=project_root / "documents",
         chunks_dir=data_dir / "chunks",
+        chunk_extractions_dir=data_dir / "chunk_extractions",
         graphs_dir=data_dir / "graphs",
         graph_embeddings_dir=data_dir / "graph_embeddings",
         chunk_embeddings_path=data_dir / "chunk_embeddings.json",
@@ -104,6 +108,9 @@ def create_runtime(
             runtime_paths.taxonomy_suggestions_path
         ),
         chunk_store=JsonChunkStore(runtime_paths.chunks_dir),
+        chunk_extraction_store=JsonChunkExtractionStore(
+            runtime_paths.chunk_extractions_dir
+        ),
         chunk_embedding_store=JsonChunkEmbeddingStore(
             runtime_paths.chunk_embeddings_path
         ),

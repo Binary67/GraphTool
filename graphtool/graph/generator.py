@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -10,9 +11,15 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import ValidationError
 
 from graphtool.chunking.types import Chunk
+from graphtool.graph.extraction_store import (
+    ChunkExtractionStore,
+    ExtractedEdge as _ExtractedEdge,
+    ExtractedKnowledgeGraph as _ExtractedKnowledgeGraph,
+    ExtractedNode as _ExtractedNode,
+)
 from graphtool.graph.provenance import (
     add_edge_provenance,
     add_node_provenance,
@@ -20,7 +27,6 @@ from graphtool.graph.provenance import (
     merge_nodes,
 )
 from graphtool.graph.taxonomy import (
-    CanonicalNodeType,
     TaxonomySuggestionStore,
     UNCLASSIFIED_NODE_TYPE,
     canonical_node_type_text,
@@ -108,51 +114,13 @@ class _GeneratedChunkGraph:
     kept_edges: int
 
 
-class _ExtractedNode(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    ref: str
-    label: str
-    type: CanonicalNodeType
-    suggested_type: str | None = None
-
-    @model_validator(mode="after")
-    def validate_suggested_type(self) -> "_ExtractedNode":
-        if self.type == UNCLASSIFIED_NODE_TYPE and not self.suggested_type:
-            raise ValueError("suggested_type is required for unclassified nodes")
-        if self.suggested_type is not None and not self.suggested_type.strip():
-            raise ValueError("suggested_type cannot be blank")
-        return self
-
-
-class _ExtractedEdge(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    source_ref: str
-    target_ref: str
-    label: str
-
-
-class _ExtractedKnowledgeGraph(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    nodes: list[_ExtractedNode]
-    edges: list[_ExtractedEdge]
-
-    @model_validator(mode="after")
-    def validate_unique_node_refs(self) -> "_ExtractedKnowledgeGraph":
-        seen = set()
-        duplicate_refs = []
-        for node in self.nodes:
-            if node.ref in seen and node.ref not in duplicate_refs:
-                duplicate_refs.append(node.ref)
-            seen.add(node.ref)
-
-        if duplicate_refs:
-            joined = ", ".join(repr(node_ref) for node_ref in duplicate_refs)
-            raise ValueError(f"extracted node refs must be unique: {joined}")
-        return self
+@dataclass(frozen=True)
+class _ChunkExtractions:
+    graphs: list[_ExtractedKnowledgeGraph]
+    records: dict[str, _ExtractedKnowledgeGraph]
+    cached_chunks: int
+    generated_chunks: int
+    extraction_requests: int
 
 
 def generate_knowledge_graph(
@@ -164,18 +132,27 @@ def generate_knowledge_graph(
     resolver: GraphResolver | None = None,
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
+    extraction_store: ChunkExtractionStore | None = None,
     max_workers: int = 4,
 ) -> KnowledgeGraph:
     if max_workers < 1:
         raise ValueError("max_workers must be positive")
 
-    generate_chunk = partial(
-        _generate_chunk_graph,
-        llm=llm,
-        dropped_edges_path=dropped_edges_path,
+    extractions = _extract_chunks(
+        chunks,
+        source,
+        llm,
+        extraction_store,
+        max_workers=max_workers,
     )
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        generated_chunks = list(executor.map(generate_chunk, chunks))
+    generated_chunks = [
+        _build_chunk_graph(
+            chunk,
+            extracted,
+            dropped_edges_path=dropped_edges_path,
+        )
+        for chunk, extracted in zip(chunks, extractions.graphs, strict=True)
+    ]
 
     taxonomy_suggestion_records = []
     for chunk, generated in zip(chunks, generated_chunks, strict=True):
@@ -197,7 +174,17 @@ def generate_knowledge_graph(
         if resolver is not None
         else combine_knowledge_graphs(graphs)
     )
-    _log_document_graph(source, len(chunks), generated_chunks, graph)
+    if extraction_store is not None:
+        extraction_store.replace(source, extractions.records)
+    _log_document_graph(
+        source,
+        len(chunks),
+        generated_chunks,
+        graph,
+        cached_chunks=extractions.cached_chunks,
+        generated_chunk_count=extractions.generated_chunks,
+        extraction_requests=extractions.extraction_requests,
+    )
     return graph.model_copy(
         update={
             "metadata": GraphMetadata(
@@ -210,13 +197,76 @@ def generate_knowledge_graph(
     )
 
 
-def _generate_chunk_graph(
-    chunk: Chunk,
+def _extract_chunks(
+    chunks: Sequence[Chunk],
+    source: str,
     llm: LLMClient,
+    extraction_store: ChunkExtractionStore | None,
     *,
-    dropped_edges_path: Path | None = None,
-) -> _GeneratedChunkGraph:
-    messages: Sequence[LLMMessage] = [
+    max_workers: int,
+) -> _ChunkExtractions:
+    messages_by_chunk = [_chunk_messages(chunk) for chunk in chunks]
+    extract = partial(_extract_chunk, llm=llm)
+
+    if extraction_store is None:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            graphs = list(executor.map(extract, chunks, messages_by_chunk))
+        return _ChunkExtractions(
+            graphs=graphs,
+            records={},
+            cached_chunks=0,
+            generated_chunks=len(chunks),
+            extraction_requests=len(chunks),
+        )
+
+    cached_records = extraction_store.load(source)
+    cache_keys = [
+        _extraction_cache_key(messages, llm.text_model)
+        for messages in messages_by_chunk
+    ]
+    records = {
+        cache_key: cached_records[cache_key]
+        for cache_key in dict.fromkeys(cache_keys)
+        if cache_key in cached_records
+    }
+    missing = {}
+    for cache_key, chunk, messages in zip(
+        cache_keys,
+        chunks,
+        messages_by_chunk,
+        strict=True,
+    ):
+        if cache_key not in records and cache_key not in missing:
+            missing[cache_key] = (chunk, messages)
+
+    missing_items = list(missing.items())
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        generated = list(
+            executor.map(
+                extract,
+                (item[1][0] for item in missing_items),
+                (item[1][1] for item in missing_items),
+            )
+        )
+    records.update(
+        (item[0], graph)
+        for item, graph in zip(missing_items, generated, strict=True)
+    )
+    cached_chunks = sum(cache_key in cached_records for cache_key in cache_keys)
+    return _ChunkExtractions(
+        graphs=[records[cache_key] for cache_key in cache_keys],
+        records={
+            cache_key: records[cache_key]
+            for cache_key in dict.fromkeys(cache_keys)
+        },
+        cached_chunks=cached_chunks,
+        generated_chunks=len(chunks) - cached_chunks,
+        extraction_requests=len(missing_items),
+    )
+
+
+def _chunk_messages(chunk: Chunk) -> list[LLMMessage]:
+    return [
         LLMMessage(role="system", content=SYSTEM_PROMPT),
         LLMMessage(
             role="user",
@@ -226,6 +276,30 @@ def _generate_chunk_graph(
             ),
         ),
     ]
+
+
+def _extraction_cache_key(
+    messages: Sequence[LLMMessage],
+    text_model: str,
+) -> str:
+    payload = {
+        "messages": [
+            {"role": message.role, "content": message.content}
+            for message in messages
+        ],
+        "response_schema": _ExtractedKnowledgeGraph.model_json_schema(),
+        "text_model": text_model,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _extract_chunk(
+    chunk: Chunk,
+    messages: Sequence[LLMMessage],
+    *,
+    llm: LLMClient,
+) -> _ExtractedKnowledgeGraph:
     try:
         graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
     except ValidationError:
@@ -234,6 +308,15 @@ def _generate_chunk_graph(
             chunk.id,
         )
         graph = llm.generate_structured(messages, _ExtractedKnowledgeGraph)
+    return graph
+
+
+def _build_chunk_graph(
+    chunk: Chunk,
+    graph: _ExtractedKnowledgeGraph,
+    *,
+    dropped_edges_path: Path | None = None,
+) -> _GeneratedChunkGraph:
     structural_node_refs = _structural_node_refs(graph.nodes, chunk)
     nodes, node_id_by_ref = _build_chunk_nodes(
         graph.nodes,
@@ -403,6 +486,10 @@ def _log_document_graph(
     chunk_count: int,
     generated_chunks: Sequence[_GeneratedChunkGraph],
     graph: KnowledgeGraph,
+    *,
+    cached_chunks: int,
+    generated_chunk_count: int,
+    extraction_requests: int,
 ) -> None:
     raw_nodes = sum(generated.raw_nodes for generated in generated_chunks)
     kept_nodes = sum(generated.kept_nodes for generated in generated_chunks)
@@ -411,7 +498,8 @@ def _log_document_graph(
     RUN_LOGGER.info(
         "Generated document graph source=%s chunks=%s raw_nodes=%s kept_nodes=%s "
         "dropped_structural_nodes=%s raw_edges=%s kept_edges=%s dropped_edges=%s "
-        "final_nodes=%s final_edges=%s",
+        "final_nodes=%s final_edges=%s cached_chunks=%s generated_chunks=%s "
+        "extraction_requests=%s",
         source,
         chunk_count,
         raw_nodes,
@@ -425,6 +513,9 @@ def _log_document_graph(
         raw_edges - kept_edges,
         len(graph.nodes),
         len(graph.edges),
+        cached_chunks,
+        generated_chunk_count,
+        extraction_requests,
     )
 
 

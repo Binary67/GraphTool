@@ -6,6 +6,7 @@ from graphtool.graph.embedding_store import (
     JsonGraphEmbeddingStore,
     NodeEmbeddingRecord,
 )
+from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.provenance import filter_knowledge_graph_by_source
@@ -43,6 +44,7 @@ __all__ = [
     "Edge",
     "EdgeProvenance",
     "GraphMetadata",
+    "JsonChunkExtractionStore",
     "JsonEmbeddingStore",
     "JsonGraphEmbeddingStore",
     "JsonGraphStore",

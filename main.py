@@ -32,6 +32,7 @@ def main() -> None:
                 runtime.knowledge_base_embedding_store
             ),
             chunk_embedding_store=runtime.chunk_embedding_store,
+            chunk_extraction_store=runtime.chunk_extraction_store,
             dropped_edges_path=runtime.paths.dropped_edges_path,
             taxonomy_suggestion_store=runtime.taxonomy_suggestion_store,
             min_candidate_similarity=(

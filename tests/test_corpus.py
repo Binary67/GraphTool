@@ -10,6 +10,7 @@ from graphtool.corpus import (
     rebuild_knowledge_base,
     synchronize_documents,
 )
+from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.generator import (
     _ExtractedEdge,
     _ExtractedKnowledgeGraph,
@@ -31,6 +32,8 @@ T = TypeVar("T")
 
 
 class FakeLLM:
+    text_model = "fake-text-model"
+
     def __init__(self, responses: list[_ExtractedKnowledgeGraph]) -> None:
         self.responses = responses
         self.calls: list[tuple[list[LLMMessage], type]] = []
@@ -44,12 +47,15 @@ class FakeLLM:
 
 
 class FailingLLM:
+    text_model = "fake-text-model"
+
     def generate_structured(self, messages, response_model):
         raise RuntimeError("extraction failed")
 
 
 class FakeSemanticLLM:
     embedding_model = "fake-embedding-model"
+    text_model = "fake-text-model"
 
     def __init__(
         self,
@@ -234,6 +240,76 @@ def test_synchronize_documents_skips_unchanged_sources(tmp_path):
     assert result.changed_sources == []
     assert result.deleted_sources == []
     assert fake.calls == []
+
+
+def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_cache(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
+    source = "docs/guide.md"
+    first_section = f"# First\n{'a' * 3100}"
+    second_section = f"# Second\n{'b' * 3100}"
+    original = f"{first_section}\n\n{second_section}"
+    initial = FakeLLM(
+        [
+            _extracted_graph(
+                [_ExtractedNode(ref="first", label="First", type="concept")]
+            ),
+            _extracted_graph(
+                [_ExtractedNode(ref="second", label="Second", type="concept")]
+            ),
+        ]
+    )
+    synchronize_documents(
+        {source: original},
+        graph_store,
+        chunk_store,
+        initial,
+        knowledge_base_store=knowledge_base_store,
+        chunk_extraction_store=extraction_store,
+        chunk_generation_workers=1,
+    )
+    replacement = f"{first_section}\n\n# Third\n{'c' * 3100}"
+    changed = FakeLLM(
+        [
+            _extracted_graph(
+                [_ExtractedNode(ref="third", label="Third", type="concept")]
+            )
+        ]
+    )
+
+    result = synchronize_documents(
+        {source: replacement},
+        graph_store,
+        chunk_store,
+        changed,
+        knowledge_base_store=knowledge_base_store,
+        chunk_extraction_store=extraction_store,
+        chunk_generation_workers=1,
+    )
+
+    assert result.changed_sources == [source]
+    assert len(initial.calls) == 2
+    assert len(changed.calls) == 1
+    assert {node.label for node in graph_store.load(source).nodes} == {
+        "First",
+        "Third",
+    }
+    assert len(extraction_store.load(source)) == 2
+
+    synchronize_documents(
+        {},
+        graph_store,
+        chunk_store,
+        FakeLLM([]),
+        knowledge_base_store=knowledge_base_store,
+        chunk_extraction_store=extraction_store,
+    )
+
+    assert extraction_store.load(source) == {}
 
 
 def test_synchronize_documents_forwards_chunk_generation_worker_validation(tmp_path):
@@ -1048,6 +1124,7 @@ def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
     knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
     source = "docs/a.md"
     original = "# A\nOriginal."
     synchronize_documents(
@@ -1058,9 +1135,11 @@ def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
             [_extracted_graph([_ExtractedNode(ref="a", label="A", type="concept")])]
         ),
         knowledge_base_store=knowledge_base_store,
+        chunk_extraction_store=extraction_store,
     )
     original_graph = graph_store.load(source)
     original_knowledge_base = knowledge_base_store.load()
+    original_extractions = extraction_store.load(source)
 
     with pytest.raises(RuntimeError, match="extraction failed"):
         synchronize_documents(
@@ -1069,8 +1148,10 @@ def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
             chunk_store,
             FailingLLM(),
             knowledge_base_store=knowledge_base_store,
+            chunk_extraction_store=extraction_store,
         )
 
     assert graph_store.load(source) == original_graph
     assert knowledge_base_store.load() == original_knowledge_base
     assert chunk_store.load(source)[0].text == original
+    assert extraction_store.load(source) == original_extractions

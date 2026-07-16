@@ -6,6 +6,7 @@ from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.markdown import chunk_markdown
 from graphtool.chunking.types import Chunk
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
+from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.provenance import remove_source_from_knowledge_graph
@@ -76,6 +77,7 @@ def synchronize_documents(
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: JsonTaxonomySuggestionStore | None = None,
+    chunk_extraction_store: JsonChunkExtractionStore | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
     chunk_generation_workers: int = 4,
 ) -> CorpusSyncResult:
@@ -129,6 +131,7 @@ def synchronize_documents(
             resolver=resolver,
             dropped_edges_path=dropped_edges_path,
             taxonomy_suggestion_store=suggestion_buffer,
+            extraction_store=chunk_extraction_store,
             max_workers=chunk_generation_workers,
         )
         prepared.append(
@@ -195,6 +198,8 @@ def synchronize_documents(
         chunk_store.delete(source)
         if graph_embedding_store is not None:
             graph_embedding_store.delete(source)
+        if chunk_extraction_store is not None:
+            chunk_extraction_store.delete(source)
         if taxonomy_suggestion_store is not None:
             taxonomy_suggestion_store.delete_source(source)
 

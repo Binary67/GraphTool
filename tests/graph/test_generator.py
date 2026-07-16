@@ -8,10 +8,13 @@ import pytest
 from pydantic import ValidationError
 
 from graphtool.chunking.types import Chunk
+from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.generator import (
     _ExtractedEdge,
     _ExtractedKnowledgeGraph,
     _ExtractedNode,
+    _chunk_messages,
+    _extraction_cache_key,
     combine_knowledge_graphs,
     generate_knowledge_graph,
 )
@@ -27,8 +30,11 @@ class FakeLLM:
     def __init__(
         self,
         responses: list[_ExtractedKnowledgeGraph | ValidationError],
+        *,
+        text_model: str = "fake-text-model",
     ) -> None:
         self.responses = responses
+        self.text_model = text_model
         self.calls: list[tuple[list[LLMMessage], type]] = []
 
     def generate_text(self, messages):
@@ -50,7 +56,14 @@ class RecordingTaxonomySuggestionStore:
         self.calls.append(list(records))
 
 
+class FailingResolver:
+    def combine(self, graphs):
+        raise RuntimeError("resolution failed")
+
+
 class CoordinatedLLM:
+    text_model = "fake-text-model"
+
     def __init__(self, *, finish_out_of_order: bool, missing_target: bool = False):
         self.finish_out_of_order = finish_out_of_order
         self.missing_target = missing_target
@@ -329,7 +342,7 @@ def test_extracted_knowledge_graph_rejects_duplicate_node_refs():
         )
 
 
-def test_generate_knowledge_graph_retries_invalid_structured_response_once():
+def test_generate_knowledge_graph_retries_and_caches_only_valid_response(tmp_path):
     with pytest.raises(ValidationError) as error:
         _extracted_graph(
             nodes=[
@@ -347,13 +360,28 @@ def test_generate_knowledge_graph_retries_invalid_structured_response_once():
             ),
         ]
     )
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
 
     graph = generate_knowledge_graph(
-        [_chunk()], "doc.md", fake, content_hash="hash"
+        [_chunk()],
+        "doc.md",
+        fake,
+        content_hash="hash",
+        extraction_store=extraction_store,
+    )
+    cached = FakeLLM([])
+    cached_graph = generate_knowledge_graph(
+        [_chunk()],
+        "doc.md",
+        cached,
+        content_hash="hash",
+        extraction_store=extraction_store,
     )
 
     assert len(fake.calls) == 2
     assert [node.id for node in graph.nodes] == [_scoped_id(1)]
+    assert cached.calls == []
+    assert cached_graph.nodes == graph.nodes
 
 
 def test_generate_knowledge_graph_renumbers_duplicate_raw_edge_ids_within_chunk():
@@ -582,7 +610,8 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
         assert (
             "INFO Generated document graph source=doc.md chunks=1 "
             "raw_nodes=3 kept_nodes=2 dropped_structural_nodes=1 "
-            "raw_edges=2 kept_edges=1 dropped_edges=1 final_nodes=2 final_edges=1"
+            "raw_edges=2 kept_edges=1 dropped_edges=1 final_nodes=2 final_edges=1 "
+            "cached_chunks=0 generated_chunks=1 extraction_requests=1"
         ) in text
     finally:
         _close_logger(logger)
@@ -861,6 +890,171 @@ def test_generate_knowledge_graph_serializes_concurrent_dropped_edge_writes(tmp_
         "doc-chunk-0000",
         "doc-chunk-0001",
     }
+
+
+def test_generate_knowledge_graph_reuses_unchanged_extractions_and_rescopes_nodes(
+    tmp_path,
+):
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
+    first_chunks = [
+        _chunk("doc-chunk-0000", 0, "# First\nFirst text.", ["First"]),
+        _chunk("doc-chunk-0001", 1, "# Second\nSecond text.", ["Second"]),
+    ]
+    first = FakeLLM(
+        [
+            _extracted_graph(
+                [_ExtractedNode(ref="first", label="First", type="concept")]
+            ),
+            _extracted_graph(
+                [_ExtractedNode(ref="second", label="Second", type="concept")]
+            ),
+        ]
+    )
+    generate_knowledge_graph(
+        first_chunks,
+        "doc.md",
+        first,
+        content_hash="first-hash",
+        extraction_store=extraction_store,
+        max_workers=1,
+    )
+    changed_chunks = [
+        _chunk("doc-chunk-0000", 0, "# Second\nSecond text.", ["Second"]),
+        _chunk("doc-chunk-0001", 1, "# Third\nThird text.", ["Third"]),
+    ]
+    changed = FakeLLM(
+        [
+            _extracted_graph(
+                [_ExtractedNode(ref="third", label="Third", type="concept")]
+            )
+        ]
+    )
+
+    cached_graph = generate_knowledge_graph(
+        changed_chunks,
+        "doc.md",
+        changed,
+        content_hash="changed-hash",
+        extraction_store=extraction_store,
+        max_workers=1,
+    )
+    cold_graph = generate_knowledge_graph(
+        changed_chunks,
+        "doc.md",
+        FakeLLM(
+            [
+                _extracted_graph(
+                    [_ExtractedNode(ref="second", label="Second", type="concept")]
+                ),
+                _extracted_graph(
+                    [_ExtractedNode(ref="third", label="Third", type="concept")]
+                ),
+            ]
+        ),
+        content_hash="changed-hash",
+        max_workers=1,
+    )
+
+    assert len(first.calls) == 2
+    assert len(changed.calls) == 1
+    assert [(node.id, node.label) for node in cached_graph.nodes] == [
+        ("doc-chunk-0000::node-0001", "Second"),
+        ("doc-chunk-0001::node-0001", "Third"),
+    ]
+    assert cached_graph.nodes == cold_graph.nodes
+    assert cached_graph.edges == cold_graph.edges
+    assert len(extraction_store.load("doc.md")) == 2
+
+
+def test_generate_knowledge_graph_deduplicates_identical_cache_misses(tmp_path):
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
+    fake = FakeLLM(
+        [_extracted_graph([_ExtractedNode(ref="same", label="Same", type="concept")])]
+    )
+    chunks = [
+        _chunk("doc-chunk-0000", 0, "# Same\nText.", ["Same"]),
+        _chunk("doc-chunk-0001", 1, "# Same\nText.", ["Same"]),
+    ]
+
+    graph = generate_knowledge_graph(
+        chunks,
+        "doc.md",
+        fake,
+        content_hash="hash",
+        extraction_store=extraction_store,
+        max_workers=2,
+    )
+
+    assert len(fake.calls) == 1
+    assert [node.id for node in graph.nodes] == [
+        "doc-chunk-0000::node-0001",
+        "doc-chunk-0001::node-0001",
+    ]
+    assert len(extraction_store.load("doc.md")) == 1
+
+
+def test_extraction_cache_key_changes_with_input_prompt_schema_and_model(monkeypatch):
+    chunk = _chunk()
+    messages = _chunk_messages(chunk)
+    original = _extraction_cache_key(messages, "model-a")
+
+    assert (
+        _extraction_cache_key(_chunk_messages(_chunk(text="Changed")), "model-a")
+        != original
+    )
+    assert _extraction_cache_key(
+        _chunk_messages(_chunk(heading_path=["Other"])),
+        "model-a",
+    ) != original
+    assert _extraction_cache_key(messages, "model-b") != original
+
+    monkeypatch.setattr(
+        "graphtool.graph.generator.SYSTEM_PROMPT",
+        "Changed extraction instructions.",
+    )
+    assert _extraction_cache_key(_chunk_messages(chunk), "model-a") != original
+
+    original_schema = _ExtractedKnowledgeGraph.model_json_schema()
+    monkeypatch.setattr(
+        _ExtractedKnowledgeGraph,
+        "model_json_schema",
+        classmethod(lambda cls: {**original_schema, "cache_test": True}),
+    )
+    assert _extraction_cache_key(messages, "model-a") != original
+
+
+def test_generate_knowledge_graph_does_not_replace_cache_when_resolution_fails(
+    tmp_path,
+):
+    extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
+    generate_knowledge_graph(
+        [_chunk()],
+        "doc.md",
+        FakeLLM(
+            [_extracted_graph([_ExtractedNode(ref="old", label="Old", type="concept")])]
+        ),
+        content_hash="old-hash",
+        extraction_store=extraction_store,
+    )
+    original = extraction_store.load("doc.md")
+
+    with pytest.raises(RuntimeError, match="resolution failed"):
+        generate_knowledge_graph(
+            [_chunk(text="# New\nNew text.", heading_path=["New"])],
+            "doc.md",
+            FakeLLM(
+                [
+                    _extracted_graph(
+                        [_ExtractedNode(ref="new", label="New", type="concept")]
+                    )
+                ]
+            ),
+            content_hash="new-hash",
+            resolver=FailingResolver(),
+            extraction_store=extraction_store,
+        )
+
+    assert extraction_store.load("doc.md") == original
 
 
 def test_combine_knowledge_graphs_merges_multiple_document_graphs():
