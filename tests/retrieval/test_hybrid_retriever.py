@@ -1,6 +1,15 @@
+import pytest
+
+import graphtool.retrieval.hybrid_retriever as hybrid_retriever
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
-from graphtool.retrieval import retrieve_context, retrieve_hybrid_context
+from graphtool.retrieval import (
+    ChunkHit,
+    GraphPathHit,
+    RetrievalResult,
+    retrieve_context,
+    retrieve_hybrid_context,
+)
 
 
 def _corpus() -> tuple[KnowledgeGraph, list[Chunk]]:
@@ -65,6 +74,20 @@ def _corpus() -> tuple[KnowledgeGraph, list[Chunk]]:
     return graph, chunks
 
 
+def _hit(chunk_id: str, source: str, index: int) -> ChunkHit:
+    return ChunkHit(
+        chunk=Chunk(
+            id=chunk_id,
+            source=source,
+            index=index,
+            text=f"Evidence for {chunk_id}.",
+        ),
+        score=1.0,
+        linked_nodes=[],
+        linked_relationships=[],
+    )
+
+
 def test_hybrid_search_fuses_unique_chunks_and_preserves_graph_paths():
     graph, chunks = _corpus()
 
@@ -86,6 +109,58 @@ def test_hybrid_search_fuses_unique_chunks_and_preserves_graph_paths():
         "beta-gamma-edge",
     ]
     assert "Graph paths:" in result.context_text
+
+
+def test_hybrid_search_fuses_distinct_rankings_and_limits_output(monkeypatch):
+    graph, chunks = _corpus()
+    overlap = _hit("overlap", "shared.md", 0)
+    direct_only = _hit("direct-only", "direct.md", 1)
+    graph_only = _hit("graph-only", "graph.md", 2)
+    graph_path = GraphPathHit(
+        score=1.0,
+        nodes=graph.nodes[:2],
+        edges=graph.edges[:1],
+        chunk_ids=["graph-only"],
+    )
+
+    def direct_search(query, graph, chunks, **kwargs):
+        return RetrievalResult(
+            query=query,
+            sources=["shared.md", "direct.md"],
+            chunks=[overlap, direct_only],
+            context_text="Direct context.",
+        )
+
+    def graph_search(query, graph, chunks, **kwargs):
+        return RetrievalResult(
+            query=query,
+            sources=["graph.md", "shared.md"],
+            chunks=[graph_only, overlap],
+            graph_paths=[graph_path],
+            context_text="Graph context.",
+        )
+
+    monkeypatch.setattr(hybrid_retriever, "retrieve_context", direct_search)
+    monkeypatch.setattr(
+        hybrid_retriever,
+        "retrieve_graph_context",
+        graph_search,
+    )
+
+    result = retrieve_hybrid_context("query", graph, chunks, top_chunks=3)
+    limited = retrieve_hybrid_context("query", graph, chunks, top_chunks=2)
+
+    assert [hit.chunk.id for hit in result.chunks] == [
+        "overlap",
+        "graph-only",
+        "direct-only",
+    ]
+    assert result.chunks[0].score == pytest.approx(1 / 61 + 1 / 62)
+    assert result.chunks[1].score == pytest.approx(1 / 61)
+    assert result.chunks[2].score == pytest.approx(1 / 62)
+    assert result.sources == ["shared.md", "graph.md", "direct.md"]
+    assert result.graph_paths == [graph_path]
+    assert [hit.chunk.id for hit in limited.chunks] == ["overlap", "graph-only"]
 
 
 def test_hybrid_search_falls_back_to_direct_chunks_without_graph_match():
