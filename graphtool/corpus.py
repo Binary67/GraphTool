@@ -78,7 +78,11 @@ def synchronize_documents(
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: JsonTaxonomySuggestionStore | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
+    chunk_generation_workers: int = 4,
 ) -> CorpusSyncResult:
+    if chunk_generation_workers < 1:
+        raise ValueError("chunk_generation_workers must be positive")
+
     existing_graphs = graph_store.load_all()
     existing_by_source = {}
     for graph in existing_graphs:
@@ -126,6 +130,7 @@ def synchronize_documents(
             resolver=resolver,
             dropped_edges_path=dropped_edges_path,
             taxonomy_suggestion_store=suggestion_buffer,
+            max_workers=chunk_generation_workers,
         )
         prepared.append(
             _PreparedDocument(

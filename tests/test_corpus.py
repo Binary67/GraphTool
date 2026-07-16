@@ -236,6 +236,28 @@ def test_synchronize_documents_skips_unchanged_sources(tmp_path):
     assert fake.calls == []
 
 
+def test_synchronize_documents_forwards_chunk_generation_worker_validation(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+
+    with pytest.raises(
+        ValueError,
+        match="chunk_generation_workers must be positive",
+    ):
+        synchronize_documents(
+            {"docs/new.md": "# New\nText."},
+            graph_store,
+            chunk_store,
+            FakeLLM([]),
+            knowledge_base_store=knowledge_base_store,
+            chunk_generation_workers=0,
+        )
+
+    assert graph_store.exists("docs/new.md") is False
+    assert knowledge_base_store.exists() is False
+
+
 def test_synchronize_documents_adds_only_pending_source(tmp_path):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
@@ -627,6 +649,7 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
         graph_embedding_store=graph_embedding_store,
         knowledge_base_embedding_store=knowledge_base_embedding_store,
         min_candidate_similarity=1.0,
+        chunk_generation_workers=1,
     )
 
     document_graph = graph_store.load(new_source)

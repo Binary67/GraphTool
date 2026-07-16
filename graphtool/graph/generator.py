@@ -2,9 +2,12 @@ import json
 import logging
 import re
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -29,6 +32,7 @@ from graphtool.llm.types import LLMMessage
 from graphtool.run_logging import LOGGER_NAME
 
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
+_DROPPED_EDGES_LOCK = Lock()
 
 
 class GraphResolver(Protocol):
@@ -160,16 +164,21 @@ def generate_knowledge_graph(
     resolver: GraphResolver | None = None,
     dropped_edges_path: Path | None = None,
     taxonomy_suggestion_store: TaxonomySuggestionStore | None = None,
+    max_workers: int = 4,
 ) -> KnowledgeGraph:
-    generated_chunks = []
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+
+    generate_chunk = partial(
+        _generate_chunk_graph,
+        llm=llm,
+        dropped_edges_path=dropped_edges_path,
+    )
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        generated_chunks = list(executor.map(generate_chunk, chunks))
+
     taxonomy_suggestion_records = []
-    for chunk in chunks:
-        generated = _generate_chunk_graph(
-            chunk,
-            llm,
-            dropped_edges_path=dropped_edges_path,
-        )
-        generated_chunks.append(generated)
+    for chunk, generated in zip(chunks, generated_chunks, strict=True):
         if taxonomy_suggestion_store is not None:
             taxonomy_suggestion_records.extend(
                 make_taxonomy_suggestion_records(
@@ -434,20 +443,21 @@ def _record_dropped_edge(
     if dropped_edges_path is None:
         return
 
-    dropped_edges_path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": chunk.source,
-        "chunk_id": chunk.id,
-        "edge_id": edge.id,
-        "label": edge.label,
-        "edge_source": edge.source_ref,
-        "edge_target": edge.target_ref,
-        "missing": missing,
-    }
-    with dropped_edges_path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(record, sort_keys=True))
-        file.write("\n")
+    with _DROPPED_EDGES_LOCK:
+        dropped_edges_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "source": chunk.source,
+            "chunk_id": chunk.id,
+            "edge_id": edge.id,
+            "label": edge.label,
+            "edge_source": edge.source_ref,
+            "edge_target": edge.target_ref,
+            "missing": missing,
+        }
+        with dropped_edges_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, sort_keys=True))
+            file.write("\n")
 
 
 def _missing_edge_description(edge: _ExtractedEdge, missing: list[str]) -> str:

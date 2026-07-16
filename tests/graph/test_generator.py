@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from logging import Logger
+from threading import Event, Lock
 from typing import TypeVar, cast
 
 import pytest
@@ -49,6 +50,68 @@ class RecordingTaxonomySuggestionStore:
         self.calls.append(list(records))
 
 
+class CoordinatedLLM:
+    def __init__(self, *, finish_out_of_order: bool, missing_target: bool = False):
+        self.finish_out_of_order = finish_out_of_order
+        self.missing_target = missing_target
+        self.first_started = Event()
+        self.second_completed = Event()
+        self.lock = Lock()
+        self.active_calls = 0
+        self.max_active_calls = 0
+        self.completion_order: list[str] = []
+
+    def generate_structured(self, messages, response_model: type[T]) -> T:
+        prompt = messages[-1].content
+        label = "First" if "# First" in prompt else "Second"
+
+        with self.lock:
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+
+        try:
+            if self.finish_out_of_order:
+                if label == "First":
+                    self.first_started.set()
+                    if not self.second_completed.wait(timeout=2):
+                        raise TimeoutError("second chunk did not run concurrently")
+                else:
+                    if not self.first_started.wait(timeout=2):
+                        raise TimeoutError("first chunk did not start")
+                    with self.lock:
+                        self.completion_order.append(label)
+                    self.second_completed.set()
+
+            edges = [
+                _ExtractedEdge(
+                    id=f"{label.casefold()}-edge",
+                    source_ref=label.casefold(),
+                    target_ref=(
+                        "missing-node" if self.missing_target else label.casefold()
+                    ),
+                    label=f"mentions_{label.casefold()}",
+                )
+            ]
+            graph = _extracted_graph(
+                nodes=[
+                    _ExtractedNode(
+                        ref=label.casefold(),
+                        label=label,
+                        type="unclassified",
+                        suggested_type="test entity",
+                    )
+                ],
+                edges=edges,
+            )
+            if not self.finish_out_of_order or label == "First":
+                with self.lock:
+                    self.completion_order.append(label)
+            return cast(T, graph)
+        finally:
+            with self.lock:
+                self.active_calls -= 1
+
+
 def _chunk(
     chunk_id: str = "doc-chunk-0000",
     index: int = 0,
@@ -82,7 +145,9 @@ def test_generate_knowledge_graph_invokes_structured_generation_per_chunk():
         _chunk("doc-chunk-0001", 1, "## Pydantic\nValidation.", ["Python", "Pydantic"]),
     ]
 
-    generate_knowledge_graph(chunks, "doc.md", fake, content_hash="hash")
+    generate_knowledge_graph(
+        chunks, "doc.md", fake, content_hash="hash", max_workers=1
+    )
 
     assert len(fake.calls) == 2
     messages, response_model = fake.calls[0]
@@ -561,7 +626,9 @@ def test_generate_knowledge_graph_scopes_reused_node_refs_across_chunks():
         _chunk("doc-chunk-0001", 1, "## Pydantic\nValidation.", ["Python", "Pydantic"]),
     ]
 
-    graph = generate_knowledge_graph(chunks, "doc.md", fake, content_hash="hash")
+    graph = generate_knowledge_graph(
+        chunks, "doc.md", fake, content_hash="hash", max_workers=1
+    )
 
     assert {node.id: node.label for node in graph.nodes} == {
         _scoped_id(1, "doc-chunk-0000"): "OpenAI",
@@ -692,6 +759,7 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
         fake,
         content_hash="hash",
         taxonomy_suggestion_store=suggestion_store,
+        max_workers=1,
     )
 
     assert len(suggestion_store.calls) == 1
@@ -704,6 +772,95 @@ def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():
         "doc-chunk-0000",
         "doc-chunk-0001",
     ]
+
+
+def test_generate_knowledge_graph_processes_chunks_concurrently_in_input_order():
+    fake = CoordinatedLLM(finish_out_of_order=True)
+    suggestion_store = RecordingTaxonomySuggestionStore()
+    chunks = [
+        _chunk("doc-chunk-0000", 0, "# First\nFirst text.", ["First"]),
+        _chunk("doc-chunk-0001", 1, "# Second\nSecond text.", ["Second"]),
+    ]
+
+    graph = generate_knowledge_graph(
+        chunks,
+        "doc.md",
+        fake,
+        content_hash="hash",
+        taxonomy_suggestion_store=suggestion_store,
+        max_workers=2,
+    )
+
+    assert fake.max_active_calls == 2
+    assert fake.completion_order == ["Second", "First"]
+    assert [node.label for node in graph.nodes] == ["First", "Second"]
+    assert [edge.label for edge in graph.edges] == [
+        "mentions_first",
+        "mentions_second",
+    ]
+    assert [record.chunk_id for record in suggestion_store.calls[0]] == [
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+    ]
+
+
+def test_generate_knowledge_graph_with_one_worker_is_sequential():
+    fake = CoordinatedLLM(finish_out_of_order=False)
+    chunks = [
+        _chunk("doc-chunk-0000", 0, "# First\nFirst text.", ["First"]),
+        _chunk("doc-chunk-0001", 1, "# Second\nSecond text.", ["Second"]),
+    ]
+
+    graph = generate_knowledge_graph(
+        chunks,
+        "doc.md",
+        fake,
+        content_hash="hash",
+        max_workers=1,
+    )
+
+    assert fake.max_active_calls == 1
+    assert fake.completion_order == ["First", "Second"]
+    assert [node.label for node in graph.nodes] == ["First", "Second"]
+
+
+@pytest.mark.parametrize("max_workers", [0, -1])
+def test_generate_knowledge_graph_requires_positive_max_workers(max_workers):
+    with pytest.raises(ValueError, match="max_workers must be positive"):
+        generate_knowledge_graph(
+            [_chunk()],
+            "doc.md",
+            FakeLLM([_extracted_graph()]),
+            content_hash="hash",
+            max_workers=max_workers,
+        )
+
+
+def test_generate_knowledge_graph_serializes_concurrent_dropped_edge_writes(tmp_path):
+    dropped_edges_path = tmp_path / "dropped_edges.jsonl"
+    fake = CoordinatedLLM(finish_out_of_order=True, missing_target=True)
+    chunks = [
+        _chunk("doc-chunk-0000", 0, "# First\nFirst text.", ["First"]),
+        _chunk("doc-chunk-0001", 1, "# Second\nSecond text.", ["Second"]),
+    ]
+
+    generate_knowledge_graph(
+        chunks,
+        "doc.md",
+        fake,
+        content_hash="hash",
+        dropped_edges_path=dropped_edges_path,
+        max_workers=2,
+    )
+
+    records = [
+        json.loads(line)
+        for line in dropped_edges_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert {record["chunk_id"] for record in records} == {
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+    }
 
 
 def test_combine_knowledge_graphs_merges_multiple_document_graphs():
