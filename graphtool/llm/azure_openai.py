@@ -2,6 +2,8 @@ import base64
 from collections.abc import Sequence
 from typing import Any, TypeVar
 
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
 from graphtool.llm.config import AzureOpenAIConfig
@@ -63,6 +65,16 @@ class AzureOpenAIClient:
             )
             vectors.extend(list(item.embedding) for item in response.data)
         return vectors
+
+
+def create_azure_openai_agent_model(
+    config: AzureOpenAIConfig,
+) -> BaseChatModel:
+    return ChatOpenAI(
+        model=config.agent_deployment,
+        base_url=config.endpoint,
+        api_key=config.api_key,
+    )
 
 
 def _to_response_input(messages: Sequence[LLMMessage]) -> list[dict[str, Any]]:

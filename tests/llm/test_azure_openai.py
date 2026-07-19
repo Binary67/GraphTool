@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 
-from graphtool.llm.azure_openai import AzureOpenAIClient
+from graphtool.llm.azure_openai import (
+    AzureOpenAIClient,
+    create_azure_openai_agent_model,
+)
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.llm.types import LLMImageContent, LLMMessage, LLMTextContent
 
@@ -72,6 +75,7 @@ def _config(**overrides):
     values = {
         "endpoint": "https://example.openai.azure.com/openai/v1/",
         "api_key": "test-key",
+        "agent_deployment": "agent-deployment",
         "fast_deployment": "fast-deployment",
         "embedding_deployment": "embedding-deployment",
     }
@@ -90,6 +94,28 @@ def test_constructs_openai_client_with_exact_config(monkeypatch):
     assert FakeOpenAI.instances[0].base_url == config.endpoint
     assert FakeOpenAI.instances[0].api_key == config.api_key
     assert client.text_model == config.fast_deployment
+
+
+def test_constructs_agent_model_with_dedicated_deployment(monkeypatch):
+    calls = []
+
+    def fake_chat_openai(**kwargs):
+        calls.append(kwargs)
+        return "agent-model"
+
+    monkeypatch.setattr("graphtool.llm.azure_openai.ChatOpenAI", fake_chat_openai)
+    config = _config()
+
+    model = create_azure_openai_agent_model(config)
+
+    assert model == "agent-model"
+    assert calls == [
+        {
+            "model": "agent-deployment",
+            "base_url": config.endpoint,
+            "api_key": config.api_key,
+        }
+    ]
 
 
 def test_generate_text_uses_responses_create(monkeypatch):

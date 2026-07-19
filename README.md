@@ -23,3 +23,31 @@ sudo apt-get install poppler-utils
 
 The configured fast Azure OpenAI deployment must support image input and
 structured output. Password-protected PDFs are not supported.
+
+## Knowledge agent
+
+Set `AZURE_OPENAI_AGENT_DEPLOYMENT` to an Azure OpenAI deployment that supports
+structured output. After synchronizing the knowledge base, create the read-only
+agent through the Python API:
+
+```python
+from graphtool.agents import create_knowledge_agent
+from graphtool.llm import (
+    create_azure_openai_agent_model,
+    load_azure_openai_config,
+)
+from graphtool.runtime import create_runtime
+
+config = load_azure_openai_config()
+runtime = create_runtime(config)
+model = create_azure_openai_agent_model(config)
+agent = create_knowledge_agent(model, runtime)
+
+response = agent.ask("What can GraphTool do?", thread_id="demo")
+print(response.answer)
+print(response.references)
+```
+
+Calls using the same thread ID share conversation history while the process is
+running. The agent searches the local knowledge base up to five times per question
+and returns `status="partial"` when the available evidence remains incomplete.

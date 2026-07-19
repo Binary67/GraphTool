@@ -2,7 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import main as main_module
-from graphtool.retrieval import RetrievalResult, SourceReference
+from graphtool.agents import AgentResponse
+from graphtool.retrieval import SourceReference
 
 
 class FakeRuntime:
@@ -17,29 +18,35 @@ class FakeRuntime:
         self.chunk_embedding_store = object()
         self.chunk_extraction_store = object()
         self.taxonomy_suggestion_store = object()
-        self.search_calls = []
-
-    def search(self, query):
-        self.search_calls.append(("direct", query))
-        return _result(query, "direct.md", "Direct context.")
-
-    def search_graph(self, query):
-        self.search_calls.append(("graph", query))
-        return _result(query, "graph.md", "Graph context.")
-
-    def search_hybrid(self, query):
-        self.search_calls.append(("hybrid", query))
-        return _result(query, "hybrid.md", "Hybrid context.")
 
 
-def _result(query: str, source: str, context: str) -> RetrievalResult:
-    return RetrievalResult(
-        query=query,
-        sources=[source],
-        references=[SourceReference(source=source)],
-        chunks=[],
-        context_text=context,
-    )
+class FakeAgent:
+    def __init__(self):
+        self.ask_calls = []
+        self.responses = [
+            AgentResponse(
+                answer="First answer.",
+                status="complete",
+                references=[SourceReference(source="docs/first.md")],
+                search_count=1,
+            ),
+            AgentResponse(
+                answer="Follow-up answer.",
+                status="partial",
+                references=[
+                    SourceReference(
+                        source="documents/manual.pdf",
+                        page_start=2,
+                        page_end=3,
+                    )
+                ],
+                search_count=5,
+            ),
+        ]
+
+    def ask(self, question, *, thread_id):
+        self.ask_calls.append((question, thread_id))
+        return self.responses.pop(0)
 
 
 def test_format_source_reference_includes_pdf_page_range():
@@ -54,7 +61,11 @@ def test_format_source_reference_includes_pdf_page_range():
     )
 
 
-def test_main_runs_and_prints_enabled_search_modes(monkeypatch, capsys, tmp_path):
+def test_main_runs_terminal_conversation_with_one_memory_thread(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
     paths = SimpleNamespace(
         root=tmp_path,
         documents_dir=tmp_path / "documents",
@@ -65,6 +76,8 @@ def test_main_runs_and_prints_enabled_search_modes(monkeypatch, capsys, tmp_path
     )
     config = SimpleNamespace(entity_resolution_min_candidate_similarity=0.8)
     runtime = FakeRuntime(paths)
+    agent_model = object()
+    agent = FakeAgent()
     logger = Mock()
     visualization_path = paths.visualizations_dir / "knowledge-base.html"
 
@@ -106,6 +119,18 @@ def test_main_runs_and_prints_enabled_search_modes(monkeypatch, capsys, tmp_path
         "export_knowledge_base_visualizations",
         Mock(return_value=[visualization_path]),
     )
+    monkeypatch.setattr(
+        main_module,
+        "create_azure_openai_agent_model",
+        Mock(return_value=agent_model),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_knowledge_agent",
+        Mock(return_value=agent),
+    )
+    questions = iter(["First question", "Follow-up question", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(questions))
 
     main_module.main()
 
@@ -116,7 +141,14 @@ def test_main_runs_and_prints_enabled_search_modes(monkeypatch, capsys, tmp_path
         pdf_llm=runtime.fast_llm,
         pdf_cache_dir=paths.pdf_conversions_dir,
     )
-    assert runtime.search_calls == [("direct", main_module.QUERY)]
-    assert "Sources: direct.md" in output
-    assert "Direct context." in output
+    main_module.create_azure_openai_agent_model.assert_called_once_with(config)
+    main_module.create_knowledge_agent.assert_called_once_with(agent_model, runtime)
+    assert agent.ask_calls == [
+        ("First question", main_module.TERMINAL_THREAD_ID),
+        ("Follow-up question", main_module.TERMINAL_THREAD_ID),
+    ]
+    assert "Agent: First answer." in output
+    assert "Sources: docs/first.md" in output
+    assert "Agent (partial): Follow-up answer." in output
+    assert "Sources: documents/manual.pdf (pp. 2-3)" in output
     assert f"- {visualization_path}" in output

@@ -1,12 +1,17 @@
+from graphtool.agents import KnowledgeAgent, create_knowledge_agent
 from graphtool.corpus import synchronize_documents
 from graphtool.ingestion import load_documents
-from graphtool.llm import load_azure_openai_config
+from graphtool.llm import (
+    create_azure_openai_agent_model,
+    load_azure_openai_config,
+)
 from graphtool.retrieval import SourceReference
 from graphtool.run_logging import configure_run_logger
 from graphtool.runtime import DEFAULT_MAX_LOG_FILES, create_runtime, default_paths
 from graphtool.visualization import export_knowledge_base_visualizations
 
-QUERY = "What can Claude Code do?"
+TERMINAL_THREAD_ID = "terminal"
+EXIT_COMMANDS = {"exit", "quit"}
 
 
 def _format_source_reference(reference: SourceReference) -> str:
@@ -15,6 +20,31 @@ def _format_source_reference(reference: SourceReference) -> str:
     if reference.page_start == reference.page_end:
         return f"{reference.source} (p. {reference.page_start})"
     return f"{reference.source} (pp. {reference.page_start}-{reference.page_end})"
+
+
+def _run_conversation(agent: KnowledgeAgent) -> None:
+    print("GraphTool agent ready. Type 'exit' or 'quit' to stop.")
+    while True:
+        try:
+            question = input("\nYou: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye.")
+            return
+
+        if not question:
+            continue
+        if question.casefold() in EXIT_COMMANDS:
+            print("Goodbye.")
+            return
+
+        response = agent.ask(question, thread_id=TERMINAL_THREAD_ID)
+        label = "Agent (partial)" if response.status == "partial" else "Agent"
+        print(f"\n{label}: {response.answer}")
+        references = ", ".join(
+            _format_source_reference(reference)
+            for reference in response.references
+        )
+        print(f"Sources: {references or 'None'}")
 
 
 def main() -> None:
@@ -67,30 +97,13 @@ def main() -> None:
         )
         logger.info("Exported %s visualizations", len(visualization_paths))
 
-        search_results = [
-            ("Direct chunk search", runtime.search(QUERY)),
-            # ("Graph path search", runtime.search_graph(QUERY)),
-            # ("Hybrid search", runtime.search_hybrid(QUERY)),
-        ]
-        for search_name, result in search_results:
-            logger.info(
-                "%s completed with %s sources",
-                search_name,
-                len(result.sources),
-            )
-            print(search_name)
-            references = ", ".join(
-                _format_source_reference(reference)
-                for reference in result.references
-            )
-            print(f"Sources: {references or 'None'}")
-            print()
-            print(result.context_text)
-            print()
-
         print("Visualizations:")
         for path in visualization_paths:
             print(f"- {path}")
+
+        agent_model = create_azure_openai_agent_model(config)
+        agent = create_knowledge_agent(agent_model, runtime)
+        _run_conversation(agent)
 
         logger.info("Finished GraphTool run")
     except Exception:

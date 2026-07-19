@@ -31,6 +31,7 @@ def _config() -> AzureOpenAIConfig:
     return AzureOpenAIConfig(
         endpoint="https://example.openai.azure.com/openai/v1/",
         api_key="test-key",
+        agent_deployment="agent-deployment",
         fast_deployment="fast-deployment",
         embedding_deployment="embedding-deployment",
     )
