@@ -17,10 +17,8 @@ from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.retrieval import (
     JsonChunkEmbeddingStore,
     RetrievalResult,
-    retrieve_context,
-    retrieve_graph_context,
-    retrieve_hybrid_context,
 )
+from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX_LOG_FILES = 3
@@ -59,50 +57,10 @@ class GraphToolRuntime:
 
     def search(self, query: str, *, top_chunks: int = 5) -> RetrievalResult:
         graph, chunks = self._search_inputs()
-        return retrieve_context(
-            query,
-            graph,
-            chunks,
-            top_chunks=top_chunks,
-            embedding_client=self.fast_llm,
-            chunk_embedding_store=self.chunk_embedding_store,
-        )
-
-    def search_graph(
-        self,
-        query: str,
-        *,
-        max_hops: int = 2,
-        top_paths: int = 5,
-        top_chunks: int = 5,
-    ) -> RetrievalResult:
-        graph, chunks = self._search_inputs()
-        return retrieve_graph_context(
-            query,
-            graph,
-            chunks,
-            max_hops=max_hops,
-            top_paths=top_paths,
-            top_chunks=top_chunks,
-            embedding_client=self.fast_llm,
-            node_embedding_store=self.knowledge_base_embedding_store,
-        )
-
-    def search_hybrid(
-        self,
-        query: str,
-        *,
-        max_hops: int = 2,
-        top_paths: int = 5,
-        top_chunks: int = 5,
-    ) -> RetrievalResult:
-        graph, chunks = self._search_inputs()
         return retrieve_hybrid_context(
             query,
             graph,
             chunks,
-            max_hops=max_hops,
-            top_paths=top_paths,
             top_chunks=top_chunks,
             embedding_client=self.fast_llm,
             chunk_embedding_store=self.chunk_embedding_store,

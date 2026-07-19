@@ -7,9 +7,9 @@ from graphtool.retrieval import (
     ChunkHit,
     GraphPathHit,
     RetrievalResult,
-    retrieve_context,
-    retrieve_hybrid_context,
 )
+from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
+from graphtool.retrieval.retriever import retrieve_context
 
 
 def _corpus() -> tuple[KnowledgeGraph, list[Chunk]]:

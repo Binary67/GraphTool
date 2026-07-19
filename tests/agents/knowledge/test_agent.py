@@ -55,7 +55,7 @@ class FakeRuntime:
         self.results = list(results)
         self.search_calls = []
 
-    def search_hybrid(self, query):
+    def search(self, query):
         self.search_calls.append(query)
         if not self.results:
             raise AssertionError("No scripted retrieval result")

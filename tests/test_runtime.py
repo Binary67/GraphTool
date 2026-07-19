@@ -130,6 +130,7 @@ def test_search_uses_combined_graph_all_chunks_and_top_chunks(monkeypatch, tmp_p
         "pydantic",
         "fastapi",
     }
+    assert result.graph_paths == []
     assert len(limited_result.chunks) == 1
 
 
@@ -159,7 +160,7 @@ def test_search_uses_runtime_embeddings_and_cache(monkeypatch, tmp_path):
     assert runtime.chunk_embedding_store.exists() is True
 
 
-def test_graph_and_hybrid_search_are_wired_through_runtime(monkeypatch, tmp_path):
+def test_search_combines_direct_chunks_and_graph_paths(monkeypatch, tmp_path):
     runtime = _runtime(monkeypatch, tmp_path)
     chunks = [
         Chunk(
@@ -217,19 +218,14 @@ def test_graph_and_hybrid_search_are_wired_through_runtime(monkeypatch, tmp_path
         )
     )
 
-    graph_result = runtime.search_graph(
-        "How is Alpha related to Gamma?",
-        top_paths=1,
-    )
-    hybrid_result = runtime.search_hybrid(
-        "How is Alpha related to Gamma?",
-        top_paths=1,
-    )
+    result = runtime.search("How is Alpha related to Gamma?")
 
-    assert len(graph_result.graph_paths) == 1
-    assert len(graph_result.graph_paths[0].edges) == 2
-    assert len(hybrid_result.graph_paths) == 1
-    assert {hit.chunk.id for hit in hybrid_result.chunks} == {
+    assert any(
+        [edge.id for edge in path.edges]
+        == ["alpha-beta-edge", "beta-gamma-edge"]
+        for path in result.graph_paths
+    )
+    assert {hit.chunk.id for hit in result.chunks} == {
         "alpha-beta",
         "beta-gamma",
     }

@@ -20,6 +20,7 @@
 
 ### Changed
 
+- Consolidated knowledge-base retrieval behind a single hybrid runtime search API.
 - Replaced the single Azure OpenAI model configuration with separate text and
   embedding deployment settings.
 - Added configuration for embedding batch size and the entity-resolution

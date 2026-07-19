@@ -21,7 +21,7 @@ def search_knowledge_base(
     if not normalized_query:
         raise ValueError("Knowledge base search query must not be empty.")
 
-    result = runtime.search_hybrid(normalized_query)
+    result = runtime.search(normalized_query)
     return KnowledgeSearchResult(
         query=normalized_query,
         context_text=result.context_text,

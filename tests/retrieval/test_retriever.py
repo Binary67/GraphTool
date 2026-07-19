@@ -4,7 +4,8 @@ import pytest
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
-from graphtool.retrieval import JsonChunkEmbeddingStore, retrieve_context
+from graphtool.retrieval import JsonChunkEmbeddingStore
+from graphtool.retrieval.retriever import retrieve_context
 
 
 class FakeEmbeddingClient:
