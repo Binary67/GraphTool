@@ -7,9 +7,11 @@ from graphtool.ingestion import pdf
 from graphtool.ingestion.pdf import (
     ConvertedPdfPage,
     PdfBatchConversion,
+    PdfPageConversion,
     convert_pdf_to_markdown,
 )
 from graphtool.llm.types import LLMImageContent, LLMTextContent
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import source_key
 
 
@@ -276,19 +278,119 @@ def test_convert_pdf_invalidates_cache_when_fast_model_changes(
     assert "Second." in markdown
 
 
-def test_convert_pdf_rejects_missing_or_duplicate_page_output(monkeypatch, tmp_path):
+def test_convert_pdf_retries_invalid_batch_with_correction(
+    monkeypatch,
+    caplog,
+    tmp_path,
+):
     _prepare(monkeypatch, ["One", "Two"])
     path = tmp_path / "manual.pdf"
     path.write_bytes(b"pdf")
-    llm = FakeLLM([_conversion((1, "One."), (1, "Duplicate."))])
+    llm = FakeLLM(
+        [
+            _conversion((2, "Two.")),
+            _conversion((1, "One."), (2, "Two.")),
+        ]
+    )
 
-    with pytest.raises(ValueError, match=r"expected pages \[1, 2\]"):
-        convert_pdf_to_markdown(
+    with caplog.at_level("INFO", logger=LOGGER_NAME):
+        markdown = convert_pdf_to_markdown(
             path,
             "documents/manual.pdf",
             llm,
             tmp_path / "cache",
         )
+
+    assert "One." in markdown
+    assert "Two." in markdown
+    assert [call[1] for call in llm.calls] == [
+        PdfBatchConversion,
+        PdfBatchConversion,
+    ]
+    correction = llm.calls[1][0][1].content[0].text
+    assert "expected pages [1, 2], received [2]" in correction
+    assert "exact order: [1, 2]" in correction
+    assert "Retrying PDF batch conversion" in caplog.text
+    assert "Recovered PDF batch conversion on retry" in caplog.text
+
+
+def test_convert_pdf_falls_back_to_caller_numbered_individual_pages(
+    monkeypatch,
+    caplog,
+    tmp_path,
+):
+    _prepare(monkeypatch, ["One", "Two"])
+    path = tmp_path / "manual.pdf"
+    path.write_bytes(b"pdf")
+    llm = FakeLLM(
+        [
+            _conversion((2, "Two.")),
+            _conversion((1, "One."), (1, "Duplicate.")),
+            PdfPageConversion(
+                markdown="# One",
+                ending_heading_path=["One"],
+            ),
+            PdfPageConversion(
+                markdown="Two.",
+                ending_heading_path=["One"],
+            ),
+        ]
+    )
+
+    with caplog.at_level("INFO", logger=LOGGER_NAME):
+        markdown = convert_pdf_to_markdown(
+            path,
+            "documents/manual.pdf",
+            llm,
+            tmp_path / "cache",
+        )
+
+    assert markdown == (
+        "<!-- graphtool:page=1 -->\n\n# One\n\n"
+        "<!-- graphtool:page=2 -->\n\nTwo.\n"
+    )
+    assert [call[1] for call in llm.calls] == [
+        PdfBatchConversion,
+        PdfBatchConversion,
+        PdfPageConversion,
+        PdfPageConversion,
+    ]
+    second_page_context = llm.calls[3][0][1].content[0].text
+    assert "Previous heading path: ['One']" in second_page_context
+    assert "<!-- graphtool:page=1 -->\n\n# One" in second_page_context
+    assert "Falling back to individual PDF pages" in caplog.text
+    assert "Recovered PDF batch conversion with individual pages" in caplog.text
+
+
+def test_convert_pdf_fails_when_individual_page_fallback_is_invalid(
+    monkeypatch,
+    tmp_path,
+):
+    _prepare(monkeypatch, ["One", "Two"])
+    path = tmp_path / "manual.pdf"
+    path.write_bytes(b"pdf")
+    cache_dir = tmp_path / "cache"
+    llm = FakeLLM(
+        [
+            _conversion((2, "Two.")),
+            _conversion((2, "Two.")),
+            PdfPageConversion(markdown=""),
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="empty Markdown without marking the page blank",
+    ):
+        convert_pdf_to_markdown(
+            path,
+            "documents/manual.pdf",
+            llm,
+            cache_dir,
+        )
+
+    batch_path = cache_dir / source_key("documents/manual.pdf") / "batches"
+    assert not list(batch_path.glob("*.json"))
 
 
 def test_convert_pdf_discards_blank_page_markdown_and_continues(monkeypatch, tmp_path):
@@ -323,20 +425,15 @@ def test_convert_pdf_discards_blank_page_markdown_and_continues(monkeypatch, tmp
     )
 
 
-def test_convert_pdf_rejects_empty_unmarked_page(monkeypatch, tmp_path):
-    _prepare(monkeypatch, ["Content"])
-    path = tmp_path / "manual.pdf"
-    path.write_bytes(b"pdf")
-
+def test_validate_conversion_rejects_empty_unmarked_page():
     with pytest.raises(
         ValueError,
         match="empty Markdown without marking the page blank",
     ):
-        convert_pdf_to_markdown(
-            path,
+        pdf._validate_conversion(
+            _conversion((1, "")),
+            [1],
             "documents/manual.pdf",
-            FakeLLM([_conversion((1, ""))]),
-            tmp_path / "cache",
         )
 
 

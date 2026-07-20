@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -10,16 +11,18 @@ from pypdf.errors import PdfReadError
 
 from graphtool.llm.base import LLMClient
 from graphtool.llm.types import LLMImageContent, LLMMessage, LLMTextContent
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import source_key
 
 PDF_BATCH_MAX_PAGES = 2
 PDF_BATCH_MAX_EXTRACTED_CHARS = 16_000
 PDF_CONTEXT_TAIL_CHARS = 1_000
 PDF_RENDER_DPI = 150
-PDF_PROMPT_REVISION = 2
+PDF_PROMPT_REVISION = 3
 _PAGE_MARKER_TEMPLATE = "<!-- graphtool:page={page_number} -->"
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
-_SYSTEM_PROMPT = (
+_CONVERSION_INSTRUCTIONS = (
     "Convert PDF pages into faithful Markdown for downstream knowledge extraction. "
     "Transcribe rather than summarize or rewrite. Preserve the original reading "
     "order, heading hierarchy, paragraphs, lists, tables, code, footnotes, captions, "
@@ -30,8 +33,15 @@ _SYSTEM_PROMPT = (
     "the remaining pages and still return one page record for every requested page. "
     "Describe meaningful figures only from clearly visible content, and never infer "
     "unreadable values or facts. Mark unreadable content as [Unclear]. Do not wrap "
-    "Markdown in a code fence and do not add page markers; the caller adds them. "
+    "Markdown in a code fence and do not add page markers; the caller adds them."
+)
+_SYSTEM_PROMPT = (
+    f"{_CONVERSION_INSTRUCTIONS} "
     "Return exactly one page record for every requested page, in request order."
+)
+_SINGLE_PAGE_SYSTEM_PROMPT = (
+    f"{_CONVERSION_INSTRUCTIONS} Return conversion content for exactly the requested "
+    "page. Do not return a page number; the caller assigns it."
 )
 
 
@@ -44,6 +54,13 @@ class ConvertedPdfPage(BaseModel):
 
 class PdfBatchConversion(BaseModel):
     pages: list[ConvertedPdfPage]
+    ending_heading_path: list[str] = Field(default_factory=list)
+
+
+class PdfPageConversion(BaseModel):
+    markdown: str
+    is_blank: bool = False
+    warnings: list[str] = Field(default_factory=list)
     ending_heading_path: list[str] = Field(default_factory=list)
 
 
@@ -126,14 +143,14 @@ def convert_pdf_to_markdown(
                 pdftoppm,
                 source,
             )
-            conversion = _convert_batch(
+            conversion = _convert_batch_with_recovery(
                 page_batch,
                 page_images,
                 heading_path,
                 markdown_tail,
                 llm,
+                source,
             )
-            conversion = _validate_conversion(conversion, page_numbers, source)
             _write_model_atomic(batch_path, conversion)
 
         converted_pages.extend(conversion.pages)
@@ -238,6 +255,7 @@ def _convert_batch(
     heading_path: list[str],
     previous_markdown: str,
     llm: LLMClient,
+    correction: str | None = None,
 ) -> PdfBatchConversion:
     context = (
         "Convert the requested pages below. Previous heading path: "
@@ -245,6 +263,8 @@ def _convert_batch(
         "only; do not repeat it:\n\n"
         f"{previous_markdown or '[None]'}"
     )
+    if correction is not None:
+        context = f"{context}\n\nCorrection required:\n{correction}"
     content = [LLMTextContent(text=context)]
     for (page_number, extracted_text), image in zip(pages, images, strict=True):
         content.extend(
@@ -265,6 +285,160 @@ def _convert_batch(
             LLMMessage(role="user", content=tuple(content)),
         ],
         PdfBatchConversion,
+    )
+
+
+def _convert_batch_with_recovery(
+    pages: list[tuple[int, str]],
+    images: list[bytes],
+    heading_path: list[str],
+    previous_markdown: str,
+    llm: LLMClient,
+    source: str,
+) -> PdfBatchConversion:
+    page_numbers = [page_number for page_number, _ in pages]
+    conversion = _convert_batch(
+        pages,
+        images,
+        heading_path,
+        previous_markdown,
+        llm,
+    )
+    try:
+        conversion = _validate_conversion(conversion, page_numbers, source)
+    except ValueError as first_error:
+        RUN_LOGGER.warning(
+            "Retrying PDF batch conversion source=%s pages=%s error=%s",
+            source,
+            page_numbers,
+            first_error,
+        )
+        correction = (
+            f"The previous response failed validation: {first_error} "
+            "Return exactly one page record for each of these page numbers, in this "
+            f"exact order: {page_numbers}. Never omit a page record; use is_blank=true "
+            "and empty Markdown when a page has no meaningful content."
+        )
+        conversion = _convert_batch(
+            pages,
+            images,
+            heading_path,
+            previous_markdown,
+            llm,
+            correction,
+        )
+        try:
+            conversion = _validate_conversion(conversion, page_numbers, source)
+        except ValueError as retry_error:
+            RUN_LOGGER.warning(
+                "Falling back to individual PDF pages source=%s pages=%s error=%s",
+                source,
+                page_numbers,
+                retry_error,
+            )
+            conversion = _convert_pages_individually(
+                pages,
+                images,
+                heading_path,
+                previous_markdown,
+                llm,
+                source,
+            )
+            RUN_LOGGER.info(
+                "Recovered PDF batch conversion with individual pages source=%s "
+                "pages=%s",
+                source,
+                page_numbers,
+            )
+        else:
+            RUN_LOGGER.info(
+                "Recovered PDF batch conversion on retry source=%s pages=%s",
+                source,
+                page_numbers,
+            )
+    return conversion
+
+
+def _convert_pages_individually(
+    pages: list[tuple[int, str]],
+    images: list[bytes],
+    heading_path: list[str],
+    previous_markdown: str,
+    llm: LLMClient,
+    source: str,
+) -> PdfBatchConversion:
+    converted_pages = []
+    current_heading_path = list(heading_path)
+    markdown_tail = previous_markdown
+    for (page_number, extracted_text), image in zip(pages, images, strict=True):
+        page_conversion = _convert_page(
+            page_number,
+            extracted_text,
+            image,
+            current_heading_path,
+            markdown_tail,
+            llm,
+        )
+        conversion = _validate_conversion(
+            PdfBatchConversion(
+                pages=[
+                    ConvertedPdfPage(
+                        page_number=page_number,
+                        markdown=page_conversion.markdown,
+                        is_blank=page_conversion.is_blank,
+                        warnings=page_conversion.warnings,
+                    )
+                ],
+                ending_heading_path=page_conversion.ending_heading_path,
+            ),
+            [page_number],
+            source,
+        )
+        converted_pages.extend(conversion.pages)
+        current_heading_path = conversion.ending_heading_path
+        if markdown_tail:
+            markdown_tail += "\n"
+        markdown_tail = (
+            markdown_tail + _assemble_markdown(conversion.pages)
+        )[-PDF_CONTEXT_TAIL_CHARS:]
+    return PdfBatchConversion(
+        pages=converted_pages,
+        ending_heading_path=current_heading_path,
+    )
+
+
+def _convert_page(
+    page_number: int,
+    extracted_text: str,
+    image: bytes,
+    heading_path: list[str],
+    previous_markdown: str,
+    llm: LLMClient,
+) -> PdfPageConversion:
+    context = (
+        f"Convert page {page_number}. Previous heading path: "
+        f"{heading_path or ['None']}. The following previous Markdown is context "
+        "only; do not repeat it:\n\n"
+        f"{previous_markdown or '[None]'}"
+    )
+    return llm.generate_structured(
+        [
+            LLMMessage(role="system", content=_SINGLE_PAGE_SYSTEM_PROMPT),
+            LLMMessage(
+                role="user",
+                content=(
+                    LLMTextContent(text=context),
+                    LLMTextContent(
+                        text=(
+                            f"Page {page_number} extracted text (use as transcription "
+                            f"grounding):\n\n{extracted_text or '[No extracted text]'}"
+                        )
+                    ),
+                    LLMImageContent(data=image, detail="high"),
+                ),
+            ),
+        ],
+        PdfPageConversion,
     )
 
 
