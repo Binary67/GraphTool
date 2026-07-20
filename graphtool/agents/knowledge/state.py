@@ -17,10 +17,16 @@ class ResearchDecision(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> "ResearchDecision":
-        if self.action == "search" and not _has_text(self.query):
-            raise ValueError("query is required when action is search")
-        if self.action == "respond" and not _has_text(self.response):
-            raise ValueError("response is required when action is respond")
+        if self.action == "search":
+            if not _has_text(self.query):
+                raise ValueError("query is required when action is search")
+            if self.response is not None:
+                raise ValueError("response must be omitted when action is search")
+        if self.action == "respond":
+            if not _has_text(self.response):
+                raise ValueError("response is required when action is respond")
+            if self.query is not None:
+                raise ValueError("query must be omitted when action is respond")
         return self
 
 
@@ -74,6 +80,7 @@ class AgentState(TypedDict, total=False):
     evidence: list[EvidenceRecord]
     references: list[EvidenceReference]
     search_count: int
+    research_action: Literal["search", "respond"] | None
     proposed_query: str | None
     direct_response: str | None
     evaluation: SufficiencyDecision | None

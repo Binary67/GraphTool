@@ -1,5 +1,7 @@
 from collections import defaultdict
 
+import pytest
+
 from graphtool.agents.knowledge import create_knowledge_agent
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
@@ -83,6 +85,30 @@ def _empty_result(query):
         chunks=[],
         context_text=f"Query: {query}\n\nEvidence:\n- None",
     )
+
+
+def test_research_decision_rejects_response_for_search_action():
+    with pytest.raises(
+        ValueError,
+        match="response must be omitted when action is search",
+    ):
+        ResearchDecision(
+            action="search",
+            query="GraphTool capabilities",
+            response="GraphTool builds a knowledge graph.",
+        )
+
+
+def test_research_decision_rejects_query_for_respond_action():
+    with pytest.raises(
+        ValueError,
+        match="query must be omitted when action is respond",
+    ):
+        ResearchDecision(
+            action="respond",
+            query="GraphTool capabilities",
+            response="Hello!",
+        )
 
 
 def test_agent_returns_complete_answer_with_only_retrieved_citations():

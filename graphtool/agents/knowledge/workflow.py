@@ -68,6 +68,7 @@ class KnowledgeAgent:
                 "evidence": [],
                 "references": [],
                 "search_count": 0,
+                "research_action": None,
                 "proposed_query": None,
                 "direct_response": None,
                 "evaluation": None,
@@ -110,6 +111,7 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
             ),
         )
         return {
+            "research_action": decision.action,
             "proposed_query": (
                 decision.query.strip() if decision.query is not None else None
             ),
@@ -271,7 +273,11 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
 
 
 def _route_research(state: AgentState) -> str:
-    return "search" if state.get("proposed_query") else "evaluate"
+    if state.get("research_action") == "search":
+        return "search"
+    if state.get("research_action") == "respond":
+        return "evaluate"
+    raise RuntimeError("Research action is missing.")
 
 
 def _route_evaluation(state: AgentState) -> str:
