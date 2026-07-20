@@ -40,6 +40,7 @@ from graphtool.runtime import create_runtime
 
 config = load_azure_openai_config()
 runtime = create_runtime(config)
+runtime.prepare_search()
 model = create_azure_openai_agent_model(config)
 agent = create_knowledge_agent(model, runtime)
 
@@ -47,6 +48,10 @@ response = agent.ask("What can GraphTool do?", thread_id="demo")
 print(response.answer)
 print(response.references)
 ```
+
+Call `runtime.prepare_search()` after each document synchronization. It loads the
+current knowledge base, prepares reusable search indexes, and refreshes stale chunk
+embeddings before queries are served.
 
 Calls using the same thread ID share conversation history while the process is
 running. By default, older history is summarized when the conversation reaches

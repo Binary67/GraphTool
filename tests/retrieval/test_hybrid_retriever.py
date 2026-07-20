@@ -2,6 +2,7 @@ import pytest
 
 import graphtool.retrieval.hybrid_retriever as hybrid_retriever
 from graphtool.chunking.types import Chunk
+from graphtool.graph.embedding_store import NodeEmbeddingRecord
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.retrieval import (
     ChunkHit,
@@ -10,6 +11,41 @@ from graphtool.retrieval import (
 )
 from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
 from graphtool.retrieval.retriever import retrieve_context
+
+
+class FakeEmbeddingClient:
+    embedding_model = "current-model"
+
+    def __init__(self):
+        self.calls = []
+
+    def embed_texts(self, texts):
+        batch = list(texts)
+        self.calls.extend(batch)
+        return [[1.0, 0.0] for _ in batch]
+
+
+class MemoryChunkEmbeddingStore:
+    def __init__(self):
+        self.records = {}
+
+    def load(self):
+        return self.records
+
+    def save(self, records):
+        self.records = dict(records)
+
+
+class MemoryNodeEmbeddingStore:
+    def load(self):
+        return {
+            "alpha": NodeEmbeddingRecord(
+                node_id="alpha",
+                embedding_model="current-model",
+                embedding_input_hash="alpha-hash",
+                vector=[1.0, 0.0],
+            )
+        }
 
 
 def _corpus() -> tuple[KnowledgeGraph, list[Chunk]]:
@@ -179,3 +215,19 @@ def test_hybrid_search_falls_back_to_direct_chunks_without_graph_match():
     ]
     assert hybrid.graph_paths == []
     assert hybrid.sources == ["operations.md"]
+
+
+def test_hybrid_search_embeds_query_once_for_chunk_and_graph_search():
+    graph, chunks = _corpus()
+    embedding = FakeEmbeddingClient()
+
+    retrieve_hybrid_context(
+        "How is Alpha related to Gamma?",
+        graph,
+        chunks,
+        embedding_client=embedding,
+        chunk_embedding_store=MemoryChunkEmbeddingStore(),
+        node_embedding_store=MemoryNodeEmbeddingStore(),
+    )
+
+    assert embedding.calls.count("How is Alpha related to Gamma?") == 1

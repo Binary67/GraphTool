@@ -18,6 +18,7 @@ class FakeRuntime:
         self.chunk_embedding_store = object()
         self.chunk_extraction_store = object()
         self.taxonomy_suggestion_store = object()
+        self.prepare_search = Mock()
 
 
 class FakeAgent:
@@ -143,6 +144,7 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
     )
     main_module.create_azure_openai_agent_model.assert_called_once_with(config)
     main_module.create_knowledge_agent.assert_called_once_with(agent_model, runtime)
+    runtime.prepare_search.assert_called_once_with()
     assert agent.ask_calls == [
         ("First question", main_module.TERMINAL_THREAD_ID),
         ("Follow-up question", main_module.TERMINAL_THREAD_ID),

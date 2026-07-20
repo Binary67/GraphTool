@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from graphtool.chunking import JsonChunkStore
@@ -18,7 +18,10 @@ from graphtool.retrieval import (
     JsonChunkEmbeddingStore,
     RetrievalResult,
 )
-from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
+from graphtool.retrieval.hybrid_retriever import (
+    PreparedHybridRetriever,
+    prepare_hybrid_retriever,
+)
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX_LOG_FILES = 3
@@ -42,7 +45,7 @@ class GraphToolPaths:
     visualizations_dir: Path
 
 
-@dataclass(frozen=True)
+@dataclass
 class GraphToolRuntime:
     paths: GraphToolPaths
     graph_store: JsonGraphStore
@@ -54,14 +57,25 @@ class GraphToolRuntime:
     chunk_extraction_store: JsonChunkExtractionStore
     chunk_embedding_store: JsonChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
+    _search_retriever: PreparedHybridRetriever | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def search(self, query: str, *, top_chunks: int = 5) -> RetrievalResult:
+        if self._search_retriever is None:
+            raise RuntimeError(
+                "Search is not prepared. Call prepare_search after synchronization."
+            )
+        return self._search_retriever.retrieve(query, top_chunks=top_chunks)
+
+    def prepare_search(self) -> None:
         graph, chunks = self._search_inputs()
-        return retrieve_hybrid_context(
-            query,
+        self._search_retriever = prepare_hybrid_retriever(
             graph,
             chunks,
-            top_chunks=top_chunks,
             embedding_client=self.fast_llm,
             chunk_embedding_store=self.chunk_embedding_store,
             node_embedding_store=self.knowledge_base_embedding_store,

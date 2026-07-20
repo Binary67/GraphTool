@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import KnowledgeGraph
@@ -8,17 +9,80 @@ from graphtool.retrieval.graph_retriever import (
     DEFAULT_MAX_HOPS,
     DEFAULT_TOP_PATHS,
     NodeEmbeddingStore,
+    PreparedGraphRetriever,
+    prepare_graph_retriever,
     retrieve_graph_context,
 )
 from graphtool.retrieval.retriever import (
+    PreparedChunkRetriever,
     _format_context,
     _source_references,
     _unique_ordered,
+    prepare_chunk_retriever,
     retrieve_context,
 )
 from graphtool.retrieval.types import ChunkHit, RetrievalResult
 
 RECIPROCAL_RANK_CONSTANT = 60
+
+
+@dataclass(frozen=True)
+class PreparedHybridRetriever:
+    direct: PreparedChunkRetriever
+    graph: PreparedGraphRetriever
+    embedding_client: EmbeddingClient | None
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        max_hops: int = DEFAULT_MAX_HOPS,
+        top_paths: int = DEFAULT_TOP_PATHS,
+        top_chunks: int = 5,
+    ) -> RetrievalResult:
+        query_vector = None
+        if self.embedding_client is not None and (
+            self.direct.chunk_vectors or self.graph.node_vectors
+        ):
+            query_vector = self.embedding_client.embed_texts([query])[0]
+        direct_result = self.direct.retrieve(
+            query,
+            top_chunks=top_chunks,
+            query_vector=query_vector,
+        )
+        graph_result = self.graph.retrieve(
+            query,
+            max_hops=max_hops,
+            top_paths=top_paths,
+            top_chunks=top_chunks,
+            query_vector=query_vector,
+        )
+        return _combine_results(query, direct_result, graph_result, top_chunks)
+
+
+def prepare_hybrid_retriever(
+    graph: KnowledgeGraph,
+    chunks: Sequence[Chunk],
+    *,
+    embedding_client: EmbeddingClient | None = None,
+    chunk_embedding_store: ChunkEmbeddingStore | None = None,
+    node_embedding_store: NodeEmbeddingStore | None = None,
+) -> PreparedHybridRetriever:
+    return PreparedHybridRetriever(
+        direct=prepare_chunk_retriever(
+            graph,
+            chunks,
+            embedding_client=embedding_client,
+            chunk_embedding_store=chunk_embedding_store,
+        ),
+        graph=prepare_graph_retriever(
+            graph,
+            chunks,
+            embedding_client=embedding_client,
+            node_embedding_store=node_embedding_store,
+        ),
+        embedding_client=embedding_client,
+    )
 
 
 def retrieve_hybrid_context(
@@ -33,6 +97,11 @@ def retrieve_hybrid_context(
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
     node_embedding_store: NodeEmbeddingStore | None = None,
 ) -> RetrievalResult:
+    query_vector = (
+        embedding_client.embed_texts([query])[0]
+        if embedding_client is not None and chunks
+        else None
+    )
     direct_result = retrieve_context(
         query,
         graph,
@@ -40,6 +109,7 @@ def retrieve_hybrid_context(
         top_chunks=top_chunks,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
+        query_vector=query_vector,
     )
     graph_result = retrieve_graph_context(
         query,
@@ -50,7 +120,17 @@ def retrieve_hybrid_context(
         top_chunks=top_chunks,
         embedding_client=embedding_client,
         node_embedding_store=node_embedding_store,
+        query_vector=query_vector,
     )
+    return _combine_results(query, direct_result, graph_result, top_chunks)
+
+
+def _combine_results(
+    query: str,
+    direct_result: RetrievalResult,
+    graph_result: RetrievalResult,
+    top_chunks: int,
+) -> RetrievalResult:
     chunk_hits = _fuse_chunk_hits(
         direct_result.chunks,
         graph_result.chunks,

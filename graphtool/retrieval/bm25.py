@@ -40,15 +40,18 @@ class BM25Index:
         self._idf = self._build_idf()
 
     def rank(self, query: str) -> list[tuple[BM25Document, float]]:
+        query_tokens = tokenize(query)
         scored = [
-            (index, document, self.score(query, document.id))
+            (index, document, self._score(query_tokens, document.id))
             for index, document in enumerate(self._documents)
         ]
         scored.sort(key=lambda item: (-item[2], item[0]))
         return [(document, score) for _, document, score in scored]
 
     def score(self, query: str, document_id: str) -> float:
-        query_tokens = tokenize(query)
+        return self._score(tokenize(query), document_id)
+
+    def _score(self, query_tokens: list[str], document_id: str) -> float:
         if not query_tokens or self._average_length == 0:
             return 0.0
 

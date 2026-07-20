@@ -88,6 +88,7 @@ def main() -> None:
             len(sync_result.deleted_sources),
             len(sync_result.unchanged_sources),
         )
+        runtime.prepare_search()
 
         logger.info("Exporting visualizations")
         visualization_paths = export_knowledge_base_visualizations(

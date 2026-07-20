@@ -42,6 +42,41 @@ class _ChunkGraphIndex:
     edges_by_chunk: dict[str, list[Edge]]
 
 
+@dataclass(frozen=True)
+class PreparedChunkRetriever:
+    chunks_by_id: dict[str, Chunk]
+    nodes_by_id: dict[str, Node]
+    graph_index: _ChunkGraphIndex
+    primary_label_index: BM25Index
+    alias_index: BM25Index
+    content_index: BM25Index
+    metadata_index: BM25Index
+    chunk_vectors: dict[str, list[float]]
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        top_chunks: int = 5,
+        query_vector: Sequence[float] | None = None,
+    ) -> RetrievalResult:
+        ranked_chunks = _rank_chunks(query, self, query_vector)[:top_chunks]
+        chunk_hits = _attach_graph_annotations(
+            ranked_chunks,
+            self.graph_index,
+            self.nodes_by_id,
+        )
+        sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
+
+        return RetrievalResult(
+            query=query,
+            sources=sources,
+            references=_source_references(chunk_hits),
+            chunks=chunk_hits,
+            context_text=_format_context(query, chunk_hits),
+        )
+
+
 def _build_chunk_graph_index(
     graph: KnowledgeGraph,
     chunks_by_id: dict[str, Chunk],
@@ -75,82 +110,95 @@ def retrieve_context(
     top_chunks: int = 5,
     embedding_client: EmbeddingClient | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
+    query_vector: Sequence[float] | None = None,
 ) -> RetrievalResult:
-    chunks_by_id = {chunk.id: chunk for chunk in chunks}
-    nodes_by_id = {node.id: node for node in graph.nodes}
-    index = _build_chunk_graph_index(graph, chunks_by_id, nodes_by_id)
-    ranked_chunks = _rank_chunks(
-        query,
-        chunks_by_id,
-        index,
-        nodes_by_id,
+    prepared = prepare_chunk_retriever(
+        graph,
+        chunks,
         embedding_client=embedding_client,
         chunk_embedding_store=chunk_embedding_store,
-    )[:top_chunks]
-    chunk_hits = _attach_graph_annotations(ranked_chunks, index, nodes_by_id)
-    sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
+    )
+    if query_vector is None and embedding_client is not None and prepared.chunk_vectors:
+        query_vector = embedding_client.embed_texts([query])[0]
+    return prepared.retrieve(
+        query,
+        top_chunks=top_chunks,
+        query_vector=query_vector,
+    )
 
-    return RetrievalResult(
-        query=query,
-        sources=sources,
-        references=_source_references(chunk_hits),
-        chunks=chunk_hits,
-        context_text=_format_context(query, chunk_hits),
+
+def prepare_chunk_retriever(
+    graph: KnowledgeGraph,
+    chunks: Sequence[Chunk],
+    *,
+    embedding_client: EmbeddingClient | None = None,
+    chunk_embedding_store: ChunkEmbeddingStore | None = None,
+) -> PreparedChunkRetriever:
+    chunks_by_id = {chunk.id: chunk for chunk in chunks}
+    nodes_by_id = {node.id: node for node in graph.nodes}
+    graph_index = _build_chunk_graph_index(graph, chunks_by_id, nodes_by_id)
+    search_fields_by_chunk = _search_fields_by_chunk(chunks_by_id, graph_index)
+    searchable_text_by_chunk = _searchable_text_by_chunk(
+        chunks_by_id,
+        graph_index,
+        nodes_by_id,
+    )
+    return PreparedChunkRetriever(
+        chunks_by_id=chunks_by_id,
+        nodes_by_id=nodes_by_id,
+        graph_index=graph_index,
+        primary_label_index=_bm25_index(
+            {
+                chunk_id: fields.primary_labels
+                for chunk_id, fields in search_fields_by_chunk.items()
+            }
+        ),
+        alias_index=_bm25_index(
+            {
+                chunk_id: fields.aliases
+                for chunk_id, fields in search_fields_by_chunk.items()
+            }
+        ),
+        content_index=_bm25_index(
+            {
+                chunk_id: fields.content
+                for chunk_id, fields in search_fields_by_chunk.items()
+            }
+        ),
+        metadata_index=_bm25_index(
+            {
+                chunk_id: fields.metadata
+                for chunk_id, fields in search_fields_by_chunk.items()
+            }
+        ),
+        chunk_vectors=_prepare_chunk_vectors(
+            searchable_text_by_chunk,
+            embedding_client,
+            chunk_embedding_store,
+        ),
     )
 
 
 def _rank_chunks(
     query: str,
-    chunks_by_id: dict[str, Chunk],
-    index: _ChunkGraphIndex,
-    nodes_by_id: dict[str, Node],
-    *,
-    embedding_client: EmbeddingClient | None = None,
-    chunk_embedding_store: ChunkEmbeddingStore | None = None,
+    prepared: PreparedChunkRetriever,
+    query_vector: Sequence[float] | None,
 ) -> list[tuple[Chunk, float]]:
-    search_fields_by_chunk = _search_fields_by_chunk(chunks_by_id, index)
-    searchable_text_by_chunk = _searchable_text_by_chunk(
-        chunks_by_id, index, nodes_by_id
-    )
-    primary_label_scores = _bm25_scores(
-        query,
-        {
-            chunk_id: fields.primary_labels
-            for chunk_id, fields in search_fields_by_chunk.items()
-        },
-    )
-    alias_scores = _bm25_scores(
-        query,
-        {
-            chunk_id: fields.aliases
-            for chunk_id, fields in search_fields_by_chunk.items()
-        },
-    )
-    content_scores = _bm25_scores(
-        query,
-        {
-            chunk_id: fields.content
-            for chunk_id, fields in search_fields_by_chunk.items()
-        },
-    )
-    metadata_scores = _bm25_scores(
-        query,
-        {
-            chunk_id: fields.metadata
-            for chunk_id, fields in search_fields_by_chunk.items()
-        },
-    )
+    primary_label_scores = _bm25_scores(query, prepared.primary_label_index)
+    alias_scores = _bm25_scores(query, prepared.alias_index)
+    content_scores = _bm25_scores(query, prepared.content_index)
+    metadata_scores = _bm25_scores(query, prepared.metadata_index)
     semantic_scores = _normalize_scores(
-        _semantic_chunk_scores(
-            query,
-            searchable_text_by_chunk,
-            embedding_client,
-            chunk_embedding_store,
-        )
+        {
+            chunk_id: _cosine_similarity(query_vector, vector)
+            for chunk_id, vector in prepared.chunk_vectors.items()
+        }
+        if query_vector is not None
+        else {}
     )
 
     ranked = []
-    for chunk in chunks_by_id.values():
+    for chunk in prepared.chunks_by_id.values():
         score = (
             primary_label_scores.get(chunk.id, 0.0) * PRIMARY_LABEL_BM25_WEIGHT
             + alias_scores.get(chunk.id, 0.0) * ALIAS_BM25_WEIGHT
@@ -165,13 +213,16 @@ def _rank_chunks(
     return ranked
 
 
-def _bm25_scores(query: str, text_by_chunk: dict[str, str]) -> dict[str, float]:
-    index = BM25Index(
+def _bm25_index(text_by_chunk: dict[str, str]) -> BM25Index:
+    return BM25Index(
         [
             BM25Document(id=chunk_id, text=text)
             for chunk_id, text in text_by_chunk.items()
         ]
     )
+
+
+def _bm25_scores(query: str, index: BM25Index) -> dict[str, float]:
     return _normalize_scores(
         {
             document.id: score
@@ -286,16 +337,14 @@ def _searchable_text_by_chunk(
     }
 
 
-def _semantic_chunk_scores(
-    query: str,
+def _prepare_chunk_vectors(
     searchable_text_by_chunk: dict[str, str],
     embedding_client: EmbeddingClient | None,
     chunk_embedding_store: ChunkEmbeddingStore | None,
-) -> dict[str, float]:
+) -> dict[str, list[float]]:
     if embedding_client is None or not searchable_text_by_chunk:
         return {}
 
-    query_vector = embedding_client.embed_texts([query])[0]
     records = chunk_embedding_store.load() if chunk_embedding_store is not None else {}
     embedding_model = embedding_client.embedding_model
     records_to_save = dict(records)
@@ -329,10 +378,7 @@ def _semantic_chunk_scores(
         if chunk_embedding_store is not None:
             chunk_embedding_store.save(records_to_save)
 
-    return {
-        chunk_id: _cosine_similarity(query_vector, record.vector)
-        for chunk_id, record in chunk_records.items()
-    }
+    return {chunk_id: record.vector for chunk_id, record in chunk_records.items()}
 
 
 def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:

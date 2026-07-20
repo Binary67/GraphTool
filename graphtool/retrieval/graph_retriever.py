@@ -9,6 +9,7 @@ from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.bm25 import BM25Document, BM25Index, tokenize
 from graphtool.retrieval.retriever import (
+    _ChunkGraphIndex,
     _attach_graph_annotations,
     _build_chunk_graph_index,
     _cosine_similarity,
@@ -37,6 +38,107 @@ class _PathCandidate:
     seed_score: float
 
 
+@dataclass(frozen=True)
+class PreparedGraphRetriever:
+    graph: KnowledgeGraph
+    chunks_by_id: dict[str, Chunk]
+    nodes_by_id: dict[str, Node]
+    edges_by_id: dict[str, Edge]
+    chunk_graph_index: _ChunkGraphIndex
+    label_index: BM25Index
+    metadata_index: BM25Index
+    node_vectors: dict[str, list[float]]
+    adjacency: dict[str, list[tuple[Edge, str]]]
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        max_hops: int = DEFAULT_MAX_HOPS,
+        top_paths: int = DEFAULT_TOP_PATHS,
+        top_chunks: int = 5,
+        query_vector: Sequence[float] | None = None,
+    ) -> RetrievalResult:
+        _validate_limits(max_hops, top_paths, top_chunks)
+        mention_scores = _mentioned_node_scores(query, self.graph.nodes)
+        seed_scores = _seed_node_scores(
+            query,
+            self.graph.nodes,
+            mention_scores,
+            self.label_index,
+            self.metadata_index,
+            query_vector,
+            self.node_vectors,
+        )
+        candidates = _traverse_paths(
+            query,
+            self.adjacency,
+            self.chunks_by_id,
+            self.nodes_by_id,
+            self.edges_by_id,
+            seed_scores,
+            mention_scores,
+            max_hops=max_hops,
+            beam_width=max(DEFAULT_BEAM_WIDTH, top_paths * 5),
+        )
+        ranked_paths = _rank_path_candidates(
+            query,
+            candidates,
+            self.chunks_by_id,
+            self.nodes_by_id,
+            self.edges_by_id,
+            seed_scores,
+            mention_scores,
+        )
+
+        graph_paths = []
+        for candidate, score in ranked_paths:
+            chunk_ids = _candidate_chunk_ids(
+                candidate,
+                self.chunks_by_id,
+                self.nodes_by_id,
+                self.edges_by_id,
+            )
+            if not chunk_ids:
+                continue
+            graph_paths.append(
+                GraphPathHit(
+                    score=score,
+                    nodes=[
+                        self.nodes_by_id[node_id]
+                        for node_id in candidate.node_ids
+                    ],
+                    edges=[
+                        self.edges_by_id[edge_id]
+                        for edge_id in candidate.edge_ids
+                    ],
+                    chunk_ids=chunk_ids,
+                )
+            )
+            if len(graph_paths) == top_paths:
+                break
+
+        ranked_chunks = _rank_evidence_chunks(
+            graph_paths,
+            self.chunks_by_id,
+        )[:top_chunks]
+        chunk_hits = _attach_graph_annotations(
+            ranked_chunks,
+            self.chunk_graph_index,
+            self.nodes_by_id,
+        )
+        sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
+
+        return RetrievalResult(
+            query=query,
+            sources=sources,
+            references=_source_references(chunk_hits),
+            chunks=chunk_hits,
+            graph_paths=graph_paths,
+            context_text=_format_context(query, chunk_hits, graph_paths),
+        )
+
+
 def retrieve_graph_context(
     query: str,
     graph: KnowledgeGraph,
@@ -47,7 +149,27 @@ def retrieve_graph_context(
     top_chunks: int = 5,
     embedding_client: EmbeddingClient | None = None,
     node_embedding_store: NodeEmbeddingStore | None = None,
+    query_vector: Sequence[float] | None = None,
 ) -> RetrievalResult:
+    _validate_limits(max_hops, top_paths, top_chunks)
+    prepared = prepare_graph_retriever(
+        graph,
+        chunks,
+        embedding_client=embedding_client,
+        node_embedding_store=node_embedding_store,
+    )
+    if query_vector is None and embedding_client is not None and prepared.node_vectors:
+        query_vector = embedding_client.embed_texts([query])[0]
+    return prepared.retrieve(
+        query,
+        max_hops=max_hops,
+        top_paths=top_paths,
+        top_chunks=top_chunks,
+        query_vector=query_vector,
+    )
+
+
+def _validate_limits(max_hops: int, top_paths: int, top_chunks: int) -> None:
     if max_hops < 1:
         raise ValueError("max_hops must be positive")
     if top_paths < 1:
@@ -55,71 +177,39 @@ def retrieve_graph_context(
     if top_chunks < 1:
         raise ValueError("top_chunks must be positive")
 
+
+def prepare_graph_retriever(
+    graph: KnowledgeGraph,
+    chunks: Sequence[Chunk],
+    *,
+    embedding_client: EmbeddingClient | None = None,
+    node_embedding_store: NodeEmbeddingStore | None = None,
+) -> PreparedGraphRetriever:
     chunks_by_id = {chunk.id: chunk for chunk in chunks}
     nodes_by_id = {node.id: node for node in graph.nodes}
     edges_by_id = {edge.id: edge for edge in graph.edges}
-    mention_scores = _mentioned_node_scores(query, graph.nodes)
-    seed_scores = _seed_node_scores(
-        query,
-        graph.nodes,
-        mention_scores,
-        embedding_client,
-        node_embedding_store,
-    )
-    candidates = _traverse_paths(
-        query,
-        graph,
-        chunks_by_id,
-        nodes_by_id,
-        edges_by_id,
-        seed_scores,
-        mention_scores,
-        max_hops=max_hops,
-        beam_width=max(DEFAULT_BEAM_WIDTH, top_paths * 5),
-    )
-    ranked_paths = _rank_path_candidates(
-        query,
-        candidates,
-        chunks_by_id,
-        nodes_by_id,
-        edges_by_id,
-        seed_scores,
-        mention_scores,
-    )
-
-    graph_paths = []
-    for candidate, score in ranked_paths:
-        chunk_ids = _candidate_chunk_ids(
-            candidate,
+    return PreparedGraphRetriever(
+        graph=graph,
+        chunks_by_id=chunks_by_id,
+        nodes_by_id=nodes_by_id,
+        edges_by_id=edges_by_id,
+        chunk_graph_index=_build_chunk_graph_index(
+            graph,
             chunks_by_id,
             nodes_by_id,
-            edges_by_id,
-        )
-        if not chunk_ids:
-            continue
-        graph_paths.append(
-            GraphPathHit(
-                score=score,
-                nodes=[nodes_by_id[node_id] for node_id in candidate.node_ids],
-                edges=[edges_by_id[edge_id] for edge_id in candidate.edge_ids],
-                chunk_ids=chunk_ids,
-            )
-        )
-        if len(graph_paths) == top_paths:
-            break
-
-    ranked_chunks = _rank_evidence_chunks(graph_paths, chunks_by_id)[:top_chunks]
-    index = _build_chunk_graph_index(graph, chunks_by_id, nodes_by_id)
-    chunk_hits = _attach_graph_annotations(ranked_chunks, index, nodes_by_id)
-    sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
-
-    return RetrievalResult(
-        query=query,
-        sources=sources,
-        references=_source_references(chunk_hits),
-        chunks=chunk_hits,
-        graph_paths=graph_paths,
-        context_text=_format_context(query, chunk_hits, graph_paths),
+        ),
+        label_index=_bm25_index(
+            {node.id: node.label for node in graph.nodes}
+        ),
+        metadata_index=_bm25_index(
+            {node.id: _node_search_text(node) for node in graph.nodes}
+        ),
+        node_vectors=_load_node_vectors(
+            graph.nodes,
+            embedding_client,
+            node_embedding_store,
+        ),
+        adjacency=_build_adjacency(graph),
     )
 
 
@@ -127,22 +217,16 @@ def _seed_node_scores(
     query: str,
     nodes: Sequence[Node],
     mention_scores: Mapping[str, float],
-    embedding_client: EmbeddingClient | None,
-    node_embedding_store: NodeEmbeddingStore | None,
+    label_index: BM25Index,
+    metadata_index: BM25Index,
+    query_vector: Sequence[float] | None,
+    node_vectors: Mapping[str, Sequence[float]],
 ) -> dict[str, float]:
-    label_scores = _normalized_bm25_scores(
-        query,
-        {node.id: node.label for node in nodes},
-    )
-    metadata_scores = _normalized_bm25_scores(
-        query,
-        {node.id: _node_search_text(node) for node in nodes},
-    )
+    label_scores = _normalized_bm25_scores(query, label_index)
+    metadata_scores = _normalized_bm25_scores(query, metadata_index)
     semantic_scores = _semantic_node_scores(
-        query,
-        nodes,
-        embedding_client,
-        node_embedding_store,
+        query_vector,
+        node_vectors,
     )
     return _normalize_scores(
         {
@@ -195,37 +279,41 @@ def _node_search_text(node: Node) -> str:
     return "\n".join(parts)
 
 
-def _semantic_node_scores(
-    query: str,
+def _load_node_vectors(
     nodes: Sequence[Node],
     embedding_client: EmbeddingClient | None,
     node_embedding_store: NodeEmbeddingStore | None,
-) -> dict[str, float]:
+) -> dict[str, list[float]]:
     if embedding_client is None or node_embedding_store is None:
         return {}
 
     records = node_embedding_store.load()
-    matching_records = {
-        node.id: records[node.id]
+    return {
+        node.id: records[node.id].vector
         for node in nodes
         if node.id in records
         and records[node.id].embedding_model == embedding_client.embedding_model
     }
-    if not matching_records:
+
+
+def _semantic_node_scores(
+    query_vector: Sequence[float] | None,
+    node_vectors: Mapping[str, Sequence[float]],
+) -> dict[str, float]:
+    if query_vector is None:
         return {}
 
-    query_vector = embedding_client.embed_texts([query])[0]
     return _normalize_scores(
         {
-            node_id: _cosine_similarity(query_vector, record.vector)
-            for node_id, record in matching_records.items()
+            node_id: _cosine_similarity(query_vector, vector)
+            for node_id, vector in node_vectors.items()
         }
     )
 
 
 def _traverse_paths(
     query: str,
-    graph: KnowledgeGraph,
+    adjacency: Mapping[str, Sequence[tuple[Edge, str]]],
     chunks_by_id: Mapping[str, Chunk],
     nodes_by_id: Mapping[str, Node],
     edges_by_id: Mapping[str, Edge],
@@ -238,7 +326,6 @@ def _traverse_paths(
     if not seed_scores:
         return []
 
-    adjacency = _build_adjacency(graph)
     seed_ids = sorted(
         seed_scores,
         key=lambda node_id: (-seed_scores[node_id], node_id),
@@ -479,13 +566,16 @@ def _rank_evidence_chunks(
 
 def _normalized_bm25_scores(
     query: str,
-    text_by_id: Mapping[str, str],
+    index: BM25Index,
 ) -> dict[str, float]:
-    index = BM25Index(
-        [BM25Document(id=item_id, text=text) for item_id, text in text_by_id.items()]
-    )
     return _normalize_scores(
         {document.id: score for document, score in index.rank(query)}
+    )
+
+
+def _bm25_index(text_by_id: Mapping[str, str]) -> BM25Index:
+    return BM25Index(
+        [BM25Document(id=item_id, text=text) for item_id, text in text_by_id.items()]
     )
 
 

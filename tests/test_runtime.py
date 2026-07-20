@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import pytest
 
 from graphtool.chunking.types import Chunk
@@ -119,6 +121,7 @@ def test_search_uses_combined_graph_all_chunks_and_top_chunks(monkeypatch, tmp_p
         )
     )
 
+    runtime.prepare_search()
     result = runtime.search("validation", top_chunks=2)
     limited_result = runtime.search("validation", top_chunks=1)
 
@@ -153,11 +156,82 @@ def test_search_uses_runtime_embeddings_and_cache(monkeypatch, tmp_path):
     runtime.chunk_store.save("docs/deploy.md", chunks)
     runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
 
+    runtime.prepare_search()
     result = runtime.search("install hangs", top_chunks=1)
 
     assert [hit.chunk.id for hit in result.chunks] == ["deploy-chunk-0000"]
     assert runtime.fast_llm.embedding_calls
     assert runtime.chunk_embedding_store.exists() is True
+
+
+def test_prepared_search_reuses_loaded_corpus_and_embeds_each_query_once(
+    monkeypatch,
+    tmp_path,
+):
+    runtime = _runtime(monkeypatch, tmp_path)
+    chunk = Chunk(
+        id="deploy-chunk-0000",
+        source="docs/deploy.md",
+        index=0,
+        text="Setup stalls after authentication.",
+    )
+    runtime.chunk_store.save(chunk.source, [chunk])
+    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    load_graph = Mock(wraps=runtime.knowledge_base_store.load)
+    load_chunks = Mock(wraps=runtime.chunk_store.load_all)
+    monkeypatch.setattr(runtime.knowledge_base_store, "load", load_graph)
+    monkeypatch.setattr(runtime.chunk_store, "load_all", load_chunks)
+
+    runtime.prepare_search()
+    runtime.fast_llm.embedding_calls.clear()
+    runtime.search("install hangs")
+    runtime.search("deployment stalls")
+
+    assert load_graph.call_count == 1
+    assert load_chunks.call_count == 1
+    assert runtime.fast_llm.embedding_calls == [
+        "install hangs",
+        "deployment stalls",
+    ]
+
+
+def test_prepare_search_refreshes_the_retrieval_snapshot(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    source = "docs/guide.md"
+    runtime.chunk_store.save(
+        source,
+        [
+            Chunk(
+                id="guide-chunk-0000",
+                source=source,
+                index=0,
+                text="Setup stalls after authentication.",
+            )
+        ],
+    )
+    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.prepare_search()
+
+    runtime.chunk_store.save(
+        source,
+        [
+            Chunk(
+                id="guide-chunk-0000",
+                source=source,
+                index=0,
+                text="Billing exports finish normally.",
+            )
+        ],
+    )
+
+    assert runtime.search("billing exports").chunks == []
+
+    runtime.prepare_search()
+    refreshed = runtime.search("billing exports")
+
+    assert [hit.chunk.text for hit in refreshed.chunks] == [
+        "Billing exports finish normally."
+    ]
 
 
 def test_search_combines_direct_chunks_and_graph_paths(monkeypatch, tmp_path):
@@ -218,6 +292,7 @@ def test_search_combines_direct_chunks_and_graph_paths(monkeypatch, tmp_path):
         )
     )
 
+    runtime.prepare_search()
     result = runtime.search("How is Alpha related to Gamma?")
 
     assert any(
@@ -238,4 +313,12 @@ def test_search_requires_synchronized_knowledge_base(monkeypatch, tmp_path):
         FileNotFoundError,
         match="Synchronize documents before searching",
     ):
+        runtime.prepare_search()
+
+
+def test_search_requires_preparation(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+
+    with pytest.raises(RuntimeError, match="Call prepare_search"):
         runtime.search("validation")
