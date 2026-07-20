@@ -64,8 +64,24 @@ use `gpt-4o-transcribe`.
 ## Knowledge agent
 
 Set `AZURE_OPENAI_AGENT_DEPLOYMENT` to an Azure OpenAI deployment that supports
-structured output. After synchronizing the knowledge base, create the read-only
-agent through the Python API:
+structured output. Ingest documents and update the knowledge base with:
+
+```sh
+uv run python ingest.py
+```
+
+Ingestion and agent conversations run separately. To start a conversation using
+the latest completed ingestion, run:
+
+```sh
+uv run python main.py
+```
+
+Do not start the agent while ingestion is running because the persisted stores
+are updated in place. If documents have changed but ingestion has not been run,
+the agent continues to use the previous knowledge base.
+
+You can also create the read-only agent through the Python API:
 
 ```python
 from graphtool.agents import create_knowledge_agent
