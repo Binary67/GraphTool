@@ -7,7 +7,8 @@ from graphtool.graph.embedding_store import (
     NodeEmbeddingRecord,
 )
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
-from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
+from graphtool.graph.combiner import combine_knowledge_graphs
+from graphtool.graph.generator import generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.provenance import filter_knowledge_graph_by_source
 from graphtool.graph.resolver import SemanticEntityResolver

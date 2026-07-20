@@ -10,10 +10,10 @@ from graphtool.corpus import (
     synchronize_documents,
 )
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
-from graphtool.graph.generator import (
-    _ExtractedEdge,
-    _ExtractedKnowledgeGraph,
-    _ExtractedNode,
+from graphtool.graph.extraction_store import (
+    ExtractedEdge as _ExtractedEdge,
+    ExtractedKnowledgeGraph as _ExtractedKnowledgeGraph,
+    ExtractedNode as _ExtractedNode,
 )
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore

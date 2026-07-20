@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from graphtool.graph.generator import combine_knowledge_graphs
+from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.source import source_key

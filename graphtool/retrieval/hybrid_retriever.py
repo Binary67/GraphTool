@@ -5,6 +5,11 @@ from graphtool.chunking.types import Chunk
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import EmbeddingClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
+from graphtool.retrieval.context import (
+    format_context,
+    source_references,
+    unique_ordered,
+)
 from graphtool.retrieval.graph_retriever import (
     DEFAULT_MAX_HOPS,
     DEFAULT_TOP_PATHS,
@@ -15,9 +20,6 @@ from graphtool.retrieval.graph_retriever import (
 )
 from graphtool.retrieval.retriever import (
     PreparedChunkRetriever,
-    _format_context,
-    _source_references,
-    _unique_ordered,
     prepare_chunk_retriever,
     retrieve_context,
 )
@@ -135,15 +137,15 @@ def _combine_results(
         direct_result.chunks,
         graph_result.chunks,
     )[:top_chunks]
-    sources = _unique_ordered(hit.chunk.source for hit in chunk_hits)
+    sources = unique_ordered(hit.chunk.source for hit in chunk_hits)
 
     return RetrievalResult(
         query=query,
         sources=sources,
-        references=_source_references(chunk_hits),
+        references=source_references(chunk_hits),
         chunks=chunk_hits,
         graph_paths=graph_result.graph_paths,
-        context_text=_format_context(
+        context_text=format_context(
             query,
             chunk_hits,
             graph_result.graph_paths,

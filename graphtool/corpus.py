@@ -7,7 +7,8 @@ from graphtool.chunking.markdown import chunk_markdown
 from graphtool.chunking.types import Chunk
 from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
-from graphtool.graph.generator import combine_knowledge_graphs, generate_knowledge_graph
+from graphtool.graph.combiner import combine_knowledge_graphs
+from graphtool.graph.generator import generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.provenance import remove_source_from_knowledge_graph
 from graphtool.graph.resolver import (

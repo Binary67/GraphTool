@@ -8,16 +8,18 @@ import pytest
 from pydantic import ValidationError
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.extraction_store import JsonChunkExtractionStore
-from graphtool.graph.generator import (
-    _ExtractedEdge,
-    _ExtractedKnowledgeGraph,
-    _ExtractedNode,
-    _chunk_messages,
-    _extraction_cache_key,
-    combine_knowledge_graphs,
-    generate_knowledge_graph,
+from graphtool.graph.combiner import combine_knowledge_graphs
+from graphtool.graph.extraction import (
+    chunk_messages as _chunk_messages,
+    extraction_cache_key as _extraction_cache_key,
 )
+from graphtool.graph.extraction_store import (
+    ExtractedEdge as _ExtractedEdge,
+    ExtractedKnowledgeGraph as _ExtractedKnowledgeGraph,
+    ExtractedNode as _ExtractedNode,
+    JsonChunkExtractionStore,
+)
+from graphtool.graph.generator import generate_knowledge_graph
 from graphtool.graph.taxonomy import JsonTaxonomySuggestionStore
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
@@ -1009,7 +1011,7 @@ def test_extraction_cache_key_changes_with_input_prompt_schema_and_model(monkeyp
     assert _extraction_cache_key(messages, "model-b") != original
 
     monkeypatch.setattr(
-        "graphtool.graph.generator.SYSTEM_PROMPT",
+        "graphtool.graph.extraction.SYSTEM_PROMPT",
         "Changed extraction instructions.",
     )
     assert _extraction_cache_key(_chunk_messages(chunk), "model-a") != original

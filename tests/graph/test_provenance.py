@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from graphtool.graph.generator import combine_knowledge_graphs
+from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.provenance import (
     filter_knowledge_graph_by_source,
     remove_source_from_knowledge_graph,
