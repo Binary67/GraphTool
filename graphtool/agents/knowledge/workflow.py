@@ -282,39 +282,76 @@ def _build_graph(
             or state["evaluation"].verdict != "sufficient"
         )
         no_evidence = partial and not state["references"]
+        system_prompt = (
+            NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
+            if no_evidence
+            else ANSWER_SYSTEM_PROMPT
+        )
+        answer_text = _answer_text(state, partial=partial)
+        references_by_id = {
+            item.id: item.reference for item in state["references"]
+        }
         draft = _validated_output(
             FinalAnswerDraft,
             answer_model.invoke(
                 [
-                    SystemMessage(
-                        content=(
-                            NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
-                            if no_evidence
-                            else ANSWER_SYSTEM_PROMPT
-                        )
-                    ),
-                    HumanMessage(content=_answer_text(state, partial=partial)),
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=answer_text),
                 ]
             ),
         )
-        references_by_id = {
-            item.id: item.reference for item in state["references"]
-        }
         cited_ids = _unique_ordered(draft.cited_reference_ids)
+        unknown_ids = [
+            reference_id
+            for reference_id in cited_ids
+            if reference_id not in references_by_id
+        ]
+        if unknown_ids:
+            valid_ids = ", ".join(references_by_id) or "[None]"
+            invalid_ids = ", ".join(unknown_ids)
+            draft = _validated_output(
+                FinalAnswerDraft,
+                answer_model.invoke(
+                    [
+                        SystemMessage(
+                            content=(
+                                f"{system_prompt}\n\n"
+                                "Your previous draft cited unknown reference IDs: "
+                                f"{invalid_ids}. Regenerate the answer using only "
+                                f"these available reference IDs: {valid_ids}. Remove "
+                                "or qualify any claim that the available evidence "
+                                "does not support."
+                            )
+                        ),
+                        HumanMessage(content=answer_text),
+                    ]
+                ),
+            )
+            cited_ids = _unique_ordered(draft.cited_reference_ids)
+            unknown_ids = [
+                reference_id
+                for reference_id in cited_ids
+                if reference_id not in references_by_id
+            ]
+            if unknown_ids:
+                joined = ", ".join(unknown_ids)
+                raise RuntimeError(
+                    "Knowledge agent answer cited unknown references after retry: "
+                    f"{joined}."
+                )
         cited_references = [
             references_by_id[reference_id]
             for reference_id in cited_ids
-            if reference_id in references_by_id
         ]
         if state["references"] and not cited_references:
             raise RuntimeError(
                 "Knowledge agent answer did not cite retrieved evidence."
             )
-        answer_text = draft.answer.strip()
+        response_text = draft.answer.strip()
         if no_evidence:
-            answer_text = f"{NO_EVIDENCE_DISCLOSURE}\n\n{answer_text}"
+            response_text = f"{NO_EVIDENCE_DISCLOSURE}\n\n{response_text}"
         response = AgentResponse(
-            answer=answer_text,
+            answer=response_text,
             status="partial" if partial else "complete",
             references=cited_references,
             search_count=state["search_count"],

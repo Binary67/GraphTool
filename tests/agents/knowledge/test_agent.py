@@ -112,7 +112,7 @@ def test_research_decision_rejects_query_for_respond_action():
         )
 
 
-def test_agent_returns_complete_answer_with_only_retrieved_citations():
+def test_agent_retries_answer_with_same_evidence_for_unknown_citation():
     model = ScriptedModel(
         {
             ResearchDecision: [
@@ -123,9 +123,13 @@ def test_agent_returns_complete_answer_with_only_retrieved_citations():
             ],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
-                    answer="GraphTool builds a knowledge graph.",
+                    answer="GraphTool builds a knowledge graph for S999.",
                     cited_reference_ids=["S1", "S999"],
-                )
+                ),
+                FinalAnswerDraft(
+                    answer="GraphTool builds a knowledge graph.",
+                    cited_reference_ids=["S1"],
+                ),
             ],
         }
     )
@@ -145,6 +149,75 @@ def test_agent_returns_complete_answer_with_only_retrieved_citations():
         )
     ]
     assert runtime.search_calls == ["GraphTool capabilities"]
+    answer_calls = model.calls[FinalAnswerDraft]
+    assert len(answer_calls) == 2
+    assert answer_calls[0][1].content == answer_calls[1][1].content
+    assert "unknown reference IDs: S999" in answer_calls[1][0].content
+    assert "available reference IDs: S1" in answer_calls[1][0].content
+
+
+def test_agent_does_not_retry_answer_when_all_citations_are_valid():
+    model = ScriptedModel(
+        {
+            ResearchDecision: [
+                ResearchDecision(action="search", query="GraphTool capabilities")
+            ],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="GraphTool builds a knowledge graph.",
+                    cited_reference_ids=["S1", "S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("GraphTool capabilities")])
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("What does GraphTool do?", thread_id="thread-1")
+
+    assert response.references == [
+        SourceReference(
+            source="docs/guide.md",
+            page_start=1,
+            page_end=1,
+        )
+    ]
+    assert response.search_count == 1
+    assert runtime.search_calls == ["GraphTool capabilities"]
+    assert len(model.calls[FinalAnswerDraft]) == 1
+
+
+def test_agent_fails_after_retry_repeats_unknown_citation():
+    model = ScriptedModel(
+        {
+            ResearchDecision: [
+                ResearchDecision(action="search", query="GraphTool capabilities")
+            ],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="First unsupported answer.",
+                    cited_reference_ids=["S999"],
+                ),
+                FinalAnswerDraft(
+                    answer="Second unsupported answer.",
+                    cited_reference_ids=["S998"],
+                ),
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("GraphTool capabilities")])
+    agent = create_knowledge_agent(model, runtime)
+
+    with pytest.raises(
+        RuntimeError,
+        match="unknown references after retry: S998",
+    ):
+        agent.ask("What does GraphTool do?", thread_id="thread-1")
+
+    assert runtime.search_calls == ["GraphTool capabilities"]
+    assert len(model.calls[FinalAnswerDraft]) == 2
 
 
 def test_agent_reformulates_search_after_insufficient_evidence():
