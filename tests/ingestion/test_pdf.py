@@ -291,15 +291,20 @@ def test_convert_pdf_rejects_missing_or_duplicate_page_output(monkeypatch, tmp_p
         )
 
 
-def test_convert_pdf_allows_explicit_blank_page(monkeypatch, tmp_path):
-    _prepare(monkeypatch, [""])
+def test_convert_pdf_discards_blank_page_markdown_and_continues(monkeypatch, tmp_path):
+    _prepare(monkeypatch, ["Template footer", "Content"])
     path = tmp_path / "blank.pdf"
     path.write_bytes(b"pdf")
     llm = FakeLLM(
         [
             PdfBatchConversion(
                 pages=[
-                    ConvertedPdfPage(page_number=1, markdown="", is_blank=True)
+                    ConvertedPdfPage(
+                        page_number=1,
+                        markdown="Confidentiality footer",
+                        is_blank=True,
+                    ),
+                    ConvertedPdfPage(page_number=2, markdown="# Content"),
                 ]
             )
         ]
@@ -312,7 +317,60 @@ def test_convert_pdf_allows_explicit_blank_page(monkeypatch, tmp_path):
         tmp_path / "cache",
     )
 
-    assert markdown == "<!-- graphtool:page=1 -->\n"
+    assert markdown == (
+        "<!-- graphtool:page=1 -->\n\n"
+        "<!-- graphtool:page=2 -->\n\n# Content\n"
+    )
+
+
+def test_convert_pdf_rejects_empty_unmarked_page(monkeypatch, tmp_path):
+    _prepare(monkeypatch, ["Content"])
+    path = tmp_path / "manual.pdf"
+    path.write_bytes(b"pdf")
+
+    with pytest.raises(
+        ValueError,
+        match="empty Markdown without marking the page blank",
+    ):
+        convert_pdf_to_markdown(
+            path,
+            "documents/manual.pdf",
+            FakeLLM([_conversion((1, ""))]),
+            tmp_path / "cache",
+        )
+
+
+def test_pdf_prompt_defines_template_only_pages_as_blank():
+    assert "confidentiality labels" in pdf._SYSTEM_PROMPT
+    assert "set is_blank to true and return empty Markdown" in pdf._SYSTEM_PROMPT
+    assert "still return one page record for every requested page" in pdf._SYSTEM_PROMPT
+
+
+def test_convert_pdf_invalidates_cache_when_prompt_revision_changes(
+    monkeypatch,
+    tmp_path,
+):
+    render_calls = _prepare(monkeypatch, ["Text"])
+    path = tmp_path / "manual.pdf"
+    path.write_bytes(b"pdf")
+    cache_dir = tmp_path / "cache"
+    convert_pdf_to_markdown(
+        path,
+        "documents/manual.pdf",
+        FakeLLM([_conversion((1, "First."))]),
+        cache_dir,
+    )
+    monkeypatch.setattr(pdf, "PDF_PROMPT_REVISION", pdf.PDF_PROMPT_REVISION + 1)
+
+    markdown = convert_pdf_to_markdown(
+        path,
+        "documents/manual.pdf",
+        FakeLLM([_conversion((1, "Second."))]),
+        cache_dir,
+    )
+
+    assert render_calls == [[1], [1]]
+    assert "Second." in markdown
 
 
 def test_convert_pdf_fails_clearly_without_poppler(monkeypatch, tmp_path):

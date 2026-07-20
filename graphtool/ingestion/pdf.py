@@ -16,7 +16,7 @@ PDF_BATCH_MAX_PAGES = 2
 PDF_BATCH_MAX_EXTRACTED_CHARS = 16_000
 PDF_CONTEXT_TAIL_CHARS = 1_000
 PDF_RENDER_DPI = 150
-PDF_PROMPT_REVISION = 1
+PDF_PROMPT_REVISION = 2
 _PAGE_MARKER_TEMPLATE = "<!-- graphtool:page={page_number} -->"
 
 _SYSTEM_PROMPT = (
@@ -24,6 +24,10 @@ _SYSTEM_PROMPT = (
     "Transcribe rather than summarize or rewrite. Preserve the original reading "
     "order, heading hierarchy, paragraphs, lists, tables, code, footnotes, captions, "
     "and visible links. Omit repeated headers, footers, and printed page numbers. "
+    "If a page contains only repeated template content, such as headers, footers, "
+    "confidentiality labels, logos, copyright notices, or page numbers, set "
+    "is_blank to true and return empty Markdown for that page. Continue processing "
+    "the remaining pages and still return one page record for every requested page. "
     "Describe meaningful figures only from clearly visible content, and never infer "
     "unreadable values or facts. Mark unreadable content as [Unclear]. Do not wrap "
     "Markdown in a code fence and do not add page markers; the caller adds them. "
@@ -279,12 +283,9 @@ def _validate_conversion(
     normalized_pages = []
     for page in conversion.pages:
         markdown = _normalize_markdown(page.markdown)
-        if page.is_blank and markdown:
-            raise ValueError(
-                f"PDF conversion for {source!r} page {page.page_number} was marked "
-                "blank but returned Markdown."
-            )
-        if not page.is_blank and not markdown:
+        if page.is_blank:
+            markdown = ""
+        elif not markdown:
             raise ValueError(
                 f"PDF conversion for {source!r} page {page.page_number} returned "
                 "empty Markdown without marking the page blank."

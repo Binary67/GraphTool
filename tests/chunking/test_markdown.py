@@ -117,3 +117,16 @@ def test_chunk_markdown_leaves_pages_unset_for_markdown_sources():
 
     assert chunks[0].page_start is None
     assert chunks[0].page_end is None
+
+
+def test_chunk_markdown_skips_empty_page_marker():
+    chunks = chunk_markdown(
+        "<!-- graphtool:page=1 -->\n\n"
+        "<!-- graphtool:page=2 -->\n\n# Guide\nText.\n",
+        "documents/slides.pptx",
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].text == "# Guide\nText."
+    assert chunks[0].page_start == 2
+    assert chunks[0].page_end == 2
