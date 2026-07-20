@@ -33,3 +33,11 @@ caller returns citations separately.
 When the search budget was exhausted, give the supported partial answer and state
 clearly what could not be established from the knowledge base.
 """
+
+NO_EVIDENCE_ANSWER_SYSTEM_PROMPT = """\
+The knowledge-base search budget was exhausted without finding citable evidence.
+Provide a helpful best-effort answer using general knowledge, and do not cite any
+reference identifiers. Do not invent private, internal, or otherwise unknowable
+facts. When the answer cannot be determined reliably, explain that uncertainty and
+suggest where the user could verify the information.
+"""

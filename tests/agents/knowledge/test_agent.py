@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from graphtool.agents.knowledge import create_knowledge_agent
+from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     FinalAnswerDraft,
     ResearchDecision,
@@ -71,6 +72,16 @@ def _result(query, source="docs/guide.md", page=1, context="Evidence text."):
         ],
         chunks=[],
         context_text=context,
+    )
+
+
+def _empty_result(query):
+    return RetrievalResult(
+        query=query,
+        sources=[],
+        references=[],
+        chunks=[],
+        context_text=f"Query: {query}\n\nEvidence:\n- None",
     )
 
 
@@ -185,6 +196,45 @@ def test_agent_stops_after_five_searches_and_returns_partial_answer():
     assert response.status == "partial"
     assert response.search_count == 5
     assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
+
+
+def test_agent_discloses_best_effort_answer_after_five_empty_searches():
+    model = ScriptedModel(
+        {
+            ResearchDecision: [ResearchDecision(action="search", query="query 1")],
+            ResearchQuery: [
+                ResearchQuery(query=f"query {index}") for index in range(2, 6)
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient") for _ in range(5)
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="A best-effort general-knowledge answer.",
+                    cited_reference_ids=[],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [_empty_result(f"query {index}") for index in range(1, 6)]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("What happened?", thread_id="thread-1")
+
+    assert response.answer == (
+        "I couldn't find supporting information in the knowledge base. The "
+        "following is a best-effort answer based on general knowledge and is not "
+        "verified against the knowledge base.\n\n"
+        "A best-effort general-knowledge answer."
+    )
+    assert response.status == "partial"
+    assert response.references == []
+    assert response.search_count == 5
+    assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
+    answer_call = model.calls[FinalAnswerDraft][0]
+    assert answer_call[0].content == NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 
 
 def test_evaluator_prevents_substantive_response_without_evidence():

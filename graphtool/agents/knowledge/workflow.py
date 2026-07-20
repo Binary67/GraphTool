@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from graphtool.agents.knowledge.prompts import (
     ANSWER_SYSTEM_PROMPT,
     EVALUATOR_SYSTEM_PROMPT,
+    NO_EVIDENCE_ANSWER_SYSTEM_PROMPT,
     REFINE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
 )
@@ -32,6 +33,11 @@ from graphtool.retrieval import SourceReference
 from graphtool.runtime import GraphToolRuntime
 
 MAX_SEARCHES_PER_TURN = 5
+NO_EVIDENCE_DISCLOSURE = (
+    "I couldn't find supporting information in the knowledge base. The following "
+    "is a best-effort answer based on general knowledge and is not verified "
+    "against the knowledge base."
+)
 
 
 class KnowledgeAgent:
@@ -155,7 +161,7 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
                 ]
             ),
         )
-        if decision.verdict == "sufficient" and not state["evidence"]:
+        if decision.verdict == "sufficient" and not state["references"]:
             decision = SufficiencyDecision(
                 verdict="insufficient",
                 missing_information=(
@@ -180,11 +186,18 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
             state["evaluation"] is None
             or state["evaluation"].verdict != "sufficient"
         )
+        no_evidence = partial and not state["references"]
         draft = _validated_output(
             FinalAnswerDraft,
             answer_model.invoke(
                 [
-                    SystemMessage(content=ANSWER_SYSTEM_PROMPT),
+                    SystemMessage(
+                        content=(
+                            NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
+                            if no_evidence
+                            else ANSWER_SYSTEM_PROMPT
+                        )
+                    ),
                     HumanMessage(content=_answer_text(state, partial=partial)),
                 ]
             ),
@@ -202,8 +215,11 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
             raise RuntimeError(
                 "Knowledge agent answer did not cite retrieved evidence."
             )
+        answer_text = draft.answer.strip()
+        if no_evidence:
+            answer_text = f"{NO_EVIDENCE_DISCLOSURE}\n\n{answer_text}"
         response = AgentResponse(
-            answer=draft.answer.strip(),
+            answer=answer_text,
             status="partial" if partial else "complete",
             references=cited_references,
             search_count=state["search_count"],
