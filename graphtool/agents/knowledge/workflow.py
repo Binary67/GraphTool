@@ -5,7 +5,12 @@ from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
+)
+from langchain_core.messages.utils import (
+    count_tokens_approximately,
+    trim_messages,
 )
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -17,10 +22,12 @@ from graphtool.agents.knowledge.prompts import (
     NO_EVIDENCE_ANSWER_SYSTEM_PROMPT,
     REFINE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
 )
 from graphtool.agents.knowledge.state import (
     AgentResponse,
     AgentState,
+    ConversationSummary,
     EvidenceRecord,
     EvidenceReference,
     FinalAnswerDraft,
@@ -33,6 +40,8 @@ from graphtool.retrieval import SourceReference
 from graphtool.runtime import GraphToolRuntime
 
 MAX_SEARCHES_PER_TURN = 5
+DEFAULT_COMPACT_TRIGGER_TOKENS = 32_000
+DEFAULT_COMPACT_RECENT_TOKENS = 8_000
 NO_EVIDENCE_DISCLOSURE = (
     "I couldn't find supporting information in the knowledge base. The following "
     "is a best-effort answer based on general knowledge and is not verified "
@@ -45,9 +54,28 @@ class KnowledgeAgent:
         self,
         model: BaseChatModel,
         runtime: GraphToolRuntime,
+        *,
+        compact_trigger_tokens: int = DEFAULT_COMPACT_TRIGGER_TOKENS,
+        compact_recent_tokens: int = DEFAULT_COMPACT_RECENT_TOKENS,
     ) -> None:
+        if compact_trigger_tokens < 1:
+            raise ValueError("Compaction trigger token count must be positive.")
+        if compact_recent_tokens < 1:
+            raise ValueError("Recent conversation token count must be positive.")
+        if compact_recent_tokens >= compact_trigger_tokens:
+            raise ValueError(
+                "Recent conversation token count must be less than the "
+                "compaction trigger."
+            )
         self._runtime = runtime
-        self._graph = _build_graph(model, runtime)
+        self._checkpointer = InMemorySaver()
+        self._graph = _build_graph(
+            model,
+            runtime,
+            self._checkpointer,
+            compact_trigger_tokens=compact_trigger_tokens,
+            compact_recent_tokens=compact_recent_tokens,
+        )
 
     def ask(self, question: str, *, thread_id: str) -> AgentResponse:
         normalized_question = question.strip()
@@ -61,6 +89,10 @@ class KnowledgeAgent:
                 "Knowledge base not found. Synchronize documents before asking."
             )
 
+        config = {
+            "configurable": {"thread_id": normalized_thread_id},
+            "recursion_limit": 50,
+        }
         result = self._graph.invoke(
             {
                 "messages": [HumanMessage(content=normalized_question)],
@@ -74,38 +106,99 @@ class KnowledgeAgent:
                 "evaluation": None,
                 "response": None,
             },
-            config={
-                "configurable": {"thread_id": normalized_thread_id},
-                "recursion_limit": 50,
-            },
+            config=config,
         )
         response = result.get("response")
         if not isinstance(response, AgentResponse):
             raise RuntimeError("Knowledge agent completed without a response.")
+        self._checkpointer.delete_thread(normalized_thread_id)
+        self._graph.update_state(
+            config,
+            result,
+            as_node="cleanup",
+        )
         return response
 
 
 def create_knowledge_agent(
     model: BaseChatModel,
     runtime: GraphToolRuntime,
+    *,
+    compact_trigger_tokens: int = DEFAULT_COMPACT_TRIGGER_TOKENS,
+    compact_recent_tokens: int = DEFAULT_COMPACT_RECENT_TOKENS,
 ) -> KnowledgeAgent:
-    return KnowledgeAgent(model, runtime)
+    return KnowledgeAgent(
+        model,
+        runtime,
+        compact_trigger_tokens=compact_trigger_tokens,
+        compact_recent_tokens=compact_recent_tokens,
+    )
 
 
-def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
+def _build_graph(
+    model: BaseChatModel,
+    runtime: GraphToolRuntime,
+    checkpointer: InMemorySaver,
+    *,
+    compact_trigger_tokens: int,
+    compact_recent_tokens: int,
+):
+    summary_model = model.with_structured_output(ConversationSummary)
     research_model = model.with_structured_output(ResearchDecision)
     refine_model = model.with_structured_output(ResearchQuery)
     evaluator_model = model.with_structured_output(SufficiencyDecision)
     answer_model = model.with_structured_output(FinalAnswerDraft)
+
+    def compact(state: AgentState) -> dict:
+        summary = state.get("conversation_summary", "")
+        messages = state["messages"]
+        if _conversation_token_count(summary, messages) < compact_trigger_tokens:
+            return {}
+
+        retained_messages = trim_messages(
+            messages,
+            max_tokens=compact_recent_tokens,
+            token_counter=count_tokens_approximately,
+            strategy="last",
+            allow_partial=False,
+            start_on="human",
+        )
+        if not retained_messages:
+            retained_messages = [messages[-1]]
+        retained_ids = {message.id for message in retained_messages}
+        messages_to_summarize = [
+            message for message in messages if message.id not in retained_ids
+        ]
+        if not messages_to_summarize:
+            return {}
+
+        updated_summary = _validated_output(
+            ConversationSummary,
+            summary_model.invoke(
+                [
+                    SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=_summary_text(summary, messages_to_summarize)
+                    ),
+                ]
+            ),
+        )
+        return {
+            "conversation_summary": updated_summary.summary.strip(),
+            "messages": [
+                RemoveMessage(id=message.id)
+                for message in messages_to_summarize
+                if message.id is not None
+            ],
+        }
 
     def research(state: AgentState) -> dict:
         decision = _validated_output(
             ResearchDecision,
             research_model.invoke(
                 [
-                    SystemMessage(
-                        content=_research_prompt(RESEARCH_SYSTEM_PROMPT, state)
-                    ),
+                    SystemMessage(content=RESEARCH_SYSTEM_PROMPT),
+                    HumanMessage(content=_research_context(state)),
                     *state["messages"],
                 ]
             ),
@@ -125,8 +218,8 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
             ResearchQuery,
             refine_model.invoke(
                 [
-                    SystemMessage(content=_research_prompt(REFINE_SYSTEM_PROMPT, state)),
-                    HumanMessage(content=state["question"]),
+                    SystemMessage(content=REFINE_SYSTEM_PROMPT),
+                    HumanMessage(content=_research_context(state)),
                 ]
             ),
         )
@@ -243,14 +336,29 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
             "response": response,
         }
 
+    def cleanup(state: AgentState) -> dict:
+        return {
+            "question": "",
+            "evidence": [],
+            "references": [],
+            "search_count": 0,
+            "research_action": None,
+            "proposed_query": None,
+            "direct_response": None,
+            "evaluation": None,
+        }
+
     builder = StateGraph(AgentState)
+    builder.add_node("compact", compact)
     builder.add_node("research", research)
     builder.add_node("refine", refine)
     builder.add_node("search", search)
     builder.add_node("evaluate", evaluate)
     builder.add_node("answer", answer)
     builder.add_node("finish_conversation", finish_conversation)
-    builder.add_edge(START, "research")
+    builder.add_node("cleanup", cleanup)
+    builder.add_edge(START, "compact")
+    builder.add_edge("compact", "research")
     builder.add_conditional_edges(
         "research",
         _route_research,
@@ -267,9 +375,10 @@ def _build_graph(model: BaseChatModel, runtime: GraphToolRuntime):
         },
     )
     builder.add_edge("refine", "search")
-    builder.add_edge("answer", END)
-    builder.add_edge("finish_conversation", END)
-    return builder.compile(checkpointer=InMemorySaver())
+    builder.add_edge("answer", "cleanup")
+    builder.add_edge("finish_conversation", "cleanup")
+    builder.add_edge("cleanup", END)
+    return builder.compile(checkpointer=checkpointer)
 
 
 def _route_research(state: AgentState) -> str:
@@ -294,7 +403,7 @@ def _route_evaluation(state: AgentState) -> str:
     return "refine"
 
 
-def _research_prompt(prompt: str, state: AgentState) -> str:
+def _research_context(state: AgentState) -> str:
     prior_queries = [record.query for record in state["evidence"]]
     missing_information = (
         state["evaluation"].missing_information
@@ -302,7 +411,8 @@ def _research_prompt(prompt: str, state: AgentState) -> str:
         else ""
     )
     return (
-        f"{prompt}\n"
+        f"Conversation summary (context only, not evidence):\n"
+        f"{state.get('conversation_summary') or '[None]'}\n\n"
         f"Original question: {state['question']}\n"
         f"Prior search queries: {prior_queries or ['None']}\n"
         f"Unresolved information: {missing_information or '[Not evaluated yet]'}"
@@ -312,7 +422,7 @@ def _research_prompt(prompt: str, state: AgentState) -> str:
 def _evaluation_text(state: AgentState) -> str:
     return (
         f"Question:\n{state['question']}\n\n"
-        f"Conversation:\n{_conversation_text(state['messages'])}\n\n"
+        f"Conversation:\n{_conversation_context_text(state)}\n\n"
         f"Proposed conversational response:\n"
         f"{state.get('direct_response') or '[None]'}\n\n"
         f"Retrieved evidence:\n{_evidence_text(state)}"
@@ -327,7 +437,7 @@ def _answer_text(state: AgentState, *, partial: bool) -> str:
     )
     return (
         f"Question:\n{state['question']}\n\n"
-        f"Conversation:\n{_conversation_text(state['messages'])}\n\n"
+        f"Conversation:\n{_conversation_context_text(state)}\n\n"
         f"Answer status: {'partial' if partial else 'complete'}\n"
         f"Unresolved information: {missing_information or '[None]'}\n\n"
         f"Retrieved evidence:\n{_evidence_text(state)}"
@@ -356,6 +466,32 @@ def _evidence_text(state: AgentState) -> str:
 def _conversation_text(messages: Sequence[AnyMessage]) -> str:
     return "\n".join(
         f"{message.type}: {_message_text(message)}" for message in messages
+    )
+
+
+def _conversation_context_text(state: AgentState) -> str:
+    summary = state.get("conversation_summary") or "[None]"
+    return (
+        f"Summary (context only, not evidence):\n{summary}\n\n"
+        f"Recent messages:\n{_conversation_text(state['messages'])}"
+    )
+
+
+def _conversation_token_count(
+    summary: str,
+    messages: Sequence[AnyMessage],
+) -> int:
+    summary_messages = [HumanMessage(content=summary)] if summary else []
+    return count_tokens_approximately([*summary_messages, *messages])
+
+
+def _summary_text(
+    summary: str,
+    messages: Sequence[AnyMessage],
+) -> str:
+    return (
+        f"Prior summary:\n{summary or '[None]'}\n\n"
+        f"Older messages to incorporate:\n{_conversation_text(messages)}"
     )
 
 

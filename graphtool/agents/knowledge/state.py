@@ -50,6 +50,12 @@ class FinalAnswerDraft(BaseModel):
     cited_reference_ids: list[str] = Field(default_factory=list)
 
 
+class ConversationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
+
+
 class EvidenceReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -76,6 +82,7 @@ class AgentResponse(BaseModel):
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
+    conversation_summary: str
     question: str
     evidence: list[EvidenceRecord]
     references: list[EvidenceReference]

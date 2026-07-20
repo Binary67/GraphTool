@@ -49,5 +49,9 @@ print(response.references)
 ```
 
 Calls using the same thread ID share conversation history while the process is
-running. The agent searches the local knowledge base up to five times per question
-and returns `status="partial"` when the available evidence remains incomplete.
+running. By default, older history is summarized when the conversation reaches
+approximately 32,000 tokens, while the most recent 8,000 tokens remain verbatim.
+These limits can be changed with `compact_trigger_tokens` and
+`compact_recent_tokens` when creating the agent. The agent searches the local
+knowledge base up to five times per question and returns `status="partial"` when
+the available evidence remains incomplete.

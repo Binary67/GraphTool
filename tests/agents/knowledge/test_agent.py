@@ -5,6 +5,7 @@ import pytest
 from graphtool.agents.knowledge import create_knowledge_agent
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
+    ConversationSummary,
     FinalAnswerDraft,
     ResearchDecision,
     ResearchQuery,
@@ -381,6 +382,97 @@ def test_search_budget_resets_for_each_turn_in_the_same_thread():
     assert first.search_count == 1
     assert follow_up.search_count == 1
     assert follow_up.references[0].page_start == 2
+
+
+def test_agent_incrementally_compacts_old_conversation_messages():
+    model = ScriptedModel(
+        {
+            ConversationSummary: [
+                ConversationSummary(summary="Apollo summary version one."),
+                ConversationSummary(summary="Apollo summary version two."),
+            ],
+            ResearchDecision: [
+                ResearchDecision(action="respond", response="First answer"),
+                ResearchDecision(action="respond", response="Second answer"),
+                ResearchDecision(action="respond", response="Third answer"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="conversation") for _ in range(3)
+            ],
+        }
+    )
+    runtime = FakeRuntime([])
+    agent = create_knowledge_agent(
+        model,
+        runtime,
+        compact_trigger_tokens=40,
+        compact_recent_tokens=20,
+    )
+    first_question = "Apollo initial context " * 20
+    second_question = "Apollo follow-up context " * 20
+
+    agent.ask(first_question, thread_id="thread-a")
+    agent.ask(second_question, thread_id="thread-a")
+    agent.ask("Thanks", thread_id="thread-a")
+
+    summary_calls = model.calls[ConversationSummary]
+    assert len(summary_calls) == 2
+    first_summary_input = str(summary_calls[0][1].content)
+    second_summary_input = str(summary_calls[1][1].content)
+    assert first_question.strip() in first_summary_input
+    assert "First answer" in first_summary_input
+    assert "Apollo summary version one." in second_summary_input
+    assert second_question.strip() in second_summary_input
+    assert "Second answer" in second_summary_input
+
+    research_calls = model.calls[ResearchDecision]
+    second_research_text = "\n".join(
+        str(message.content) for message in research_calls[1]
+    )
+    third_research_text = "\n".join(
+        str(message.content) for message in research_calls[2]
+    )
+    assert "Apollo summary version one." in second_research_text
+    assert first_question.strip() not in second_research_text
+    assert "Apollo summary version two." in third_research_text
+    assert second_question.strip() not in third_research_text
+
+
+def test_completed_turn_keeps_one_clean_checkpoint():
+    model = ScriptedModel(
+        {
+            ResearchDecision: [
+                ResearchDecision(action="search", query="GraphTool capabilities")
+            ],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="GraphTool builds a knowledge graph.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("GraphTool capabilities")])
+    agent = create_knowledge_agent(model, runtime)
+    config = {"configurable": {"thread_id": "thread-a"}}
+
+    response = agent.ask("What does GraphTool do?", thread_id="thread-a")
+
+    checkpoints = list(agent._checkpointer.list(config))
+    state = agent._graph.get_state(config).values
+    assert len(checkpoints) == 1
+    assert state["question"] == ""
+    assert state["evidence"] == []
+    assert state["references"] == []
+    assert state["search_count"] == 0
+    assert state["research_action"] is None
+    assert state["evaluation"] is None
+    assert state["response"] == response
+    assert [message.content for message in state["messages"]] == [
+        "What does GraphTool do?",
+        "GraphTool builds a knowledge graph.",
+    ]
 
 
 def test_agent_rejects_invalid_input_and_missing_knowledge_base():
