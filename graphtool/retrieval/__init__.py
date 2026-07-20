@@ -6,6 +6,10 @@ from graphtool.retrieval.embedding_store import (
     ChunkEmbeddingStore,
     JsonChunkEmbeddingStore,
 )
+from graphtool.retrieval.references import (
+    format_source_location,
+    format_source_reference,
+)
 from graphtool.retrieval.types import (
     ChunkHit,
     ChunkRelationship,
@@ -23,6 +27,8 @@ __all__ = [
     "ChunkEmbeddingStore",
     "JsonChunkEmbeddingStore",
     "GraphPathHit",
+    "format_source_location",
+    "format_source_reference",
     "RetrievalResult",
     "SourceReference",
 ]

@@ -9,6 +9,7 @@ def test_load_documents_returns_empty_for_missing_directory(tmp_path):
         source_root=tmp_path,
         pdf_llm=object(),
         pdf_cache_dir=tmp_path / "cache",
+        presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=object(),
         audio_cache_dir=tmp_path / "audio-cache",
     )
@@ -16,7 +17,10 @@ def test_load_documents_returns_empty_for_missing_directory(tmp_path):
     assert documents == {}
 
 
-def test_load_documents_reads_markdown_and_converts_pdf(monkeypatch, tmp_path):
+def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
+    monkeypatch,
+    tmp_path,
+):
     documents_dir = tmp_path / "documents"
     nested_dir = documents_dir / "guides"
     nested_dir.mkdir(parents=True)
@@ -24,7 +28,10 @@ def test_load_documents_reads_markdown_and_converts_pdf(monkeypatch, tmp_path):
     (documents_dir / "a.MD").write_text("# A")
     pdf_path = nested_dir / "manual.PDF"
     pdf_path.write_bytes(b"pdf")
+    pptx_path = nested_dir / "slides.PPTX"
+    pptx_path.write_bytes(b"pptx")
     convert_calls = []
+    presentation_calls = []
 
     def fake_convert(path, source, llm, cache_dir):
         convert_calls.append((path, source, llm, cache_dir))
@@ -34,14 +41,27 @@ def test_load_documents_reads_markdown_and_converts_pdf(monkeypatch, tmp_path):
         "graphtool.ingestion.documents.convert_pdf_to_markdown",
         fake_convert,
     )
+
+    def fake_convert_pptx(path, source, llm, presentation_cache_dir, pdf_cache_dir):
+        presentation_calls.append(
+            (path, source, llm, presentation_cache_dir, pdf_cache_dir)
+        )
+        return "# Slides"
+
+    monkeypatch.setattr(
+        "graphtool.ingestion.documents.convert_pptx_to_markdown",
+        fake_convert_pptx,
+    )
     llm = object()
     cache_dir = tmp_path / "cache"
+    presentation_cache_dir = tmp_path / "presentation-cache"
 
     documents = load_documents(
         documents_dir,
         source_root=tmp_path,
         pdf_llm=llm,
         pdf_cache_dir=cache_dir,
+        presentation_cache_dir=presentation_cache_dir,
         audio_transcriber=object(),
         audio_cache_dir=tmp_path / "audio-cache",
     )
@@ -49,9 +69,19 @@ def test_load_documents_reads_markdown_and_converts_pdf(monkeypatch, tmp_path):
     assert documents == {
         "documents/a.MD": "# A",
         "documents/guides/manual.PDF": "# Manual",
+        "documents/guides/slides.PPTX": "# Slides",
     }
     assert convert_calls == [
         (pdf_path, "documents/guides/manual.PDF", llm, cache_dir)
+    ]
+    assert presentation_calls == [
+        (
+            pptx_path,
+            "documents/guides/slides.PPTX",
+            llm,
+            presentation_cache_dir,
+            cache_dir,
+        )
     ]
 
 
@@ -78,6 +108,7 @@ def test_load_documents_does_not_return_partial_results_on_pdf_failure(
             source_root=tmp_path,
             pdf_llm=object(),
             pdf_cache_dir=tmp_path / "cache",
+            presentation_cache_dir=tmp_path / "presentation-cache",
             audio_transcriber=object(),
             audio_cache_dir=tmp_path / "audio-cache",
         )
@@ -107,6 +138,7 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
         source_root=tmp_path,
         pdf_llm=object(),
         pdf_cache_dir=tmp_path / "pdf-cache",
+        presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=transcriber,
         audio_cache_dir=cache_dir,
     )

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from graphtool.ingestion.audio import convert_audio_to_markdown
 from graphtool.ingestion.pdf import convert_pdf_to_markdown
+from graphtool.ingestion.presentation import convert_pptx_to_markdown
 from graphtool.llm.base import AudioTranscriptionClient, LLMClient
 
 _AUDIO_SUFFIXES = {
@@ -15,7 +16,7 @@ _AUDIO_SUFFIXES = {
     ".wav",
     ".webm",
 }
-_SUPPORTED_SUFFIXES = {".md", ".pdf", *_AUDIO_SUFFIXES}
+_SUPPORTED_SUFFIXES = {".md", ".pdf", ".pptx", *_AUDIO_SUFFIXES}
 
 
 def load_documents(
@@ -24,6 +25,7 @@ def load_documents(
     source_root: str | Path,
     pdf_llm: LLMClient,
     pdf_cache_dir: str | Path,
+    presentation_cache_dir: str | Path,
     audio_transcriber: AudioTranscriptionClient,
     audio_cache_dir: str | Path,
 ) -> dict[str, str]:
@@ -47,6 +49,14 @@ def load_documents(
                 document_path,
                 source,
                 pdf_llm,
+                pdf_cache_dir,
+            )
+        elif document_path.suffix.lower() == ".pptx":
+            documents[source] = convert_pptx_to_markdown(
+                document_path,
+                source,
+                pdf_llm,
+                presentation_cache_dir,
                 pdf_cache_dir,
             )
         else:

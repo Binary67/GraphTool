@@ -7,7 +7,7 @@ from graphtool.agents.knowledge.state import (
     AgentState,
     EvidenceReference,
 )
-from graphtool.retrieval import SourceReference
+from graphtool.retrieval import SourceReference, format_source_reference
 
 
 def research_context(state: AgentState) -> str:
@@ -142,8 +142,4 @@ def _reference_key(
 
 
 def _format_reference(reference: SourceReference) -> str:
-    if reference.page_start is None:
-        return reference.source
-    if reference.page_start == reference.page_end:
-        return f"{reference.source} (p. {reference.page_start})"
-    return f"{reference.source} (pp. {reference.page_start}-{reference.page_end})"
+    return format_source_reference(reference)

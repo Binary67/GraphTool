@@ -5,7 +5,7 @@ from graphtool.llm import (
     create_azure_openai_agent_model,
     load_azure_openai_config,
 )
-from graphtool.retrieval import SourceReference
+from graphtool.retrieval import SourceReference, format_source_reference
 from graphtool.run_logging import configure_run_logger
 from graphtool.runtime import DEFAULT_MAX_LOG_FILES, create_runtime, default_paths
 from graphtool.visualization import export_knowledge_base_visualizations
@@ -15,11 +15,7 @@ EXIT_COMMANDS = {"exit", "quit"}
 
 
 def _format_source_reference(reference: SourceReference) -> str:
-    if reference.page_start is None:
-        return reference.source
-    if reference.page_start == reference.page_end:
-        return f"{reference.source} (p. {reference.page_start})"
-    return f"{reference.source} (pp. {reference.page_start}-{reference.page_end})"
+    return format_source_reference(reference)
 
 
 def _run_conversation(agent: KnowledgeAgent) -> None:
@@ -60,6 +56,7 @@ def main() -> None:
             source_root=runtime.paths.root,
             pdf_llm=runtime.fast_llm,
             pdf_cache_dir=runtime.paths.pdf_conversions_dir,
+            presentation_cache_dir=runtime.paths.presentation_conversions_dir,
             audio_transcriber=runtime.audio_transcriber,
             audio_cache_dir=runtime.paths.audio_transcriptions_dir,
         )

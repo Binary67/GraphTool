@@ -18,6 +18,8 @@ documents/**
 !documents/markdown/.gitkeep
 !documents/pdfs/
 !documents/pdfs/.gitkeep
+!documents/presentations/
+!documents/presentations/.gitkeep
 !documents/recordings/
 !documents/recordings/.gitkeep
 data/

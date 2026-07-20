@@ -1,13 +1,15 @@
 # GraphTool
 
 GraphTool builds and searches a knowledge graph from files placed under
-`documents/`. Markdown, PDF, and audio inputs are discovered recursively. A
+`documents/`. Markdown, PDF, PowerPoint, and audio inputs are discovered
+recursively. A
 recommended layout is:
 
 ```text
 documents/
 ├── markdown/
 ├── pdfs/
+├── presentations/
 └── recordings/
 ```
 
@@ -18,19 +20,28 @@ PDFs are rendered page by page and converted to Markdown with the configured
 `AZURE_OPENAI_FAST_DEPLOYMENT`. Converted pages are cached under
 `data/pdf_conversions/`, so unchanged PDFs do not require additional model calls.
 
-## PDF requirements
+PowerPoint `.pptx` files are converted to PDF with LibreOffice, one slide per
+page, and then use the same text-and-image PDF conversion pipeline. Generated
+PDFs are cached under `data/presentation_conversions/`; source references retain
+the original `.pptx` path and display page ranges as slide ranges. Speaker notes,
+comments, animations, and embedded media are not ingested.
+
+## PDF and PowerPoint requirements
 
 Install the project dependencies with `uv sync`. PDF rendering also requires
-Poppler's `pdftoppm` executable. Audio transcription requires the `ffmpeg` and
-`ffprobe` executables:
+Poppler's `pdftoppm` executable, and PowerPoint conversion requires LibreOffice's
+`soffice` executable. Audio transcription requires the `ffmpeg` and `ffprobe`
+executables:
 
 ```sh
 # macOS
 brew install poppler
+brew install --cask libreoffice
 brew install ffmpeg
 
 # Ubuntu or Debian
 sudo apt-get install poppler-utils
+sudo apt-get install libreoffice
 sudo apt-get install ffmpeg
 ```
 

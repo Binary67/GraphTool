@@ -63,6 +63,17 @@ def test_format_source_reference_includes_pdf_page_range():
     )
 
 
+def test_format_source_reference_uses_slide_label_for_powerpoint():
+    reference = SourceReference(
+        source="documents/slides.PPTX",
+        page_start=3,
+        page_end=5,
+    )
+
+    assert main_module._format_source_reference(reference) == (
+        "documents/slides.PPTX (slides 3-5)"
+    )
+
 def test_main_runs_terminal_conversation_with_one_memory_thread(
     monkeypatch,
     capsys,
@@ -72,6 +83,7 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
         root=tmp_path,
         documents_dir=tmp_path / "documents",
         pdf_conversions_dir=tmp_path / "pdf-conversions",
+        presentation_conversions_dir=tmp_path / "presentation-conversions",
         audio_transcriptions_dir=tmp_path / "audio-transcriptions",
         dropped_edges_path=tmp_path / "dropped_edges.jsonl",
         logs_dir=tmp_path / "logs",
@@ -143,6 +155,7 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
         source_root=paths.root,
         pdf_llm=runtime.fast_llm,
         pdf_cache_dir=paths.pdf_conversions_dir,
+        presentation_cache_dir=paths.presentation_conversions_dir,
         audio_transcriber=runtime.audio_transcriber,
         audio_cache_dir=paths.audio_transcriptions_dir,
     )

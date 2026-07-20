@@ -33,6 +33,7 @@ class GraphToolPaths:
     documents_dir: Path
     audio_transcriptions_dir: Path
     pdf_conversions_dir: Path
+    presentation_conversions_dir: Path
     chunks_dir: Path
     chunk_extractions_dir: Path
     graphs_dir: Path
@@ -99,6 +100,7 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
         documents_dir=project_root / "documents",
         audio_transcriptions_dir=data_dir / "audio_transcriptions",
         pdf_conversions_dir=data_dir / "pdf_conversions",
+        presentation_conversions_dir=data_dir / "presentation_conversions",
         chunks_dir=data_dir / "chunks",
         chunk_extractions_dir=data_dir / "chunk_extractions",
         graphs_dir=data_dir / "graphs",

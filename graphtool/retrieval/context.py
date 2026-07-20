@@ -5,6 +5,7 @@ from typing import Any
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.retrieval.references import format_source_location
 from graphtool.retrieval.types import (
     ChunkHit,
     ChunkRelationship,
@@ -82,7 +83,8 @@ def format_context(
         for hit in chunk_hits:
             heading = " > ".join(hit.chunk.heading_path)
             metadata = f"{hit.chunk.id} | {hit.chunk.source}"
-            page_reference = _format_page_range(
+            page_reference = format_source_location(
+                hit.chunk.source,
                 hit.chunk.page_start,
                 hit.chunk.page_end,
             )
@@ -196,11 +198,3 @@ def _graph_path_text(path: GraphPathHit) -> str:
         else:
             parts.append(f"<--{edge.label}-- {right.label}")
     return " ".join(parts)
-
-
-def _format_page_range(page_start: int | None, page_end: int | None) -> str:
-    if page_start is None:
-        return ""
-    if page_start == page_end:
-        return f"p. {page_start}"
-    return f"pp. {page_start}-{page_end}"
