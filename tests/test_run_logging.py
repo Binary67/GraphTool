@@ -5,13 +5,18 @@ from logging import Logger
 from graphtool.run_logging import configure_run_logger
 
 
-def test_configure_run_logger_creates_directory_and_writes_message(tmp_path):
+def test_configure_run_logger_writes_detailed_file_and_human_console(
+    capsys,
+    tmp_path,
+):
     logs_dir = tmp_path / "logs"
 
     logger = configure_run_logger(logs_dir)
     try:
+        logger.debug("Generated chunk graph source=guide.md chunks=2")
         logger.info("Loaded 2 markdown documents")
         _flush_logger(logger)
+        captured = capsys.readouterr()
 
         log_files = list(logs_dir.glob("graphtool-*.log"))
         assert logs_dir.exists()
@@ -20,7 +25,11 @@ def test_configure_run_logger_creates_directory_and_writes_message(tmp_path):
             r"graphtool-\d{8}-\d{6}(?:-\d{3})?\.log",
             log_files[0].name,
         )
-        assert "Loaded 2 markdown documents" in log_files[0].read_text()
+        log_text = log_files[0].read_text()
+        assert "Generated chunk graph source=guide.md chunks=2" in log_text
+        assert "Loaded 2 markdown documents" in log_text
+        assert captured.err == "Loaded 2 markdown documents\n"
+        assert "Generated chunk graph" not in captured.err
     finally:
         _close_logger(logger)
 

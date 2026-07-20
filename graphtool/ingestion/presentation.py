@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -10,9 +11,11 @@ from pypdf.errors import PdfReadError
 
 from graphtool.ingestion.pdf import convert_pdf_to_markdown
 from graphtool.llm.base import LLMClient
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import source_key
 
 PRESENTATION_CONVERSION_REVISION = 1
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 class _PresentationConversionManifest(BaseModel):
@@ -55,6 +58,12 @@ def convert_pptx_to_pdf(
         and pdf_path.exists()
         and _file_hash(pdf_path) == manifest.pdf_hash
     ):
+        RUN_LOGGER.info(
+            "Using cached PowerPoint PDF for %s (%s %s)",
+            source,
+            manifest.page_count,
+            "slide" if manifest.page_count == 1 else "slides",
+        )
         return pdf_path
 
     soffice = shutil.which("soffice")
@@ -63,6 +72,7 @@ def convert_pptx_to_pdf(
             f"Cannot convert {source!r}: LibreOffice soffice was not found."
         )
 
+    RUN_LOGGER.info("Converting PowerPoint to PDF: %s", source)
     with tempfile.TemporaryDirectory(prefix="graphtool-pptx-") as temporary_dir:
         temporary_path = Path(temporary_dir)
         command = [
@@ -105,6 +115,12 @@ def convert_pptx_to_pdf(
         pdf_hash=pdf_hash,
     )
     _write_model_atomic(manifest_path, completed_manifest)
+    RUN_LOGGER.info(
+        "Converted PowerPoint to PDF: %s (%s %s)",
+        source,
+        page_count,
+        "slide" if page_count == 1 else "slides",
+    )
     return pdf_path
 
 

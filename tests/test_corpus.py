@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import TypeVar
 
@@ -25,6 +26,7 @@ from graphtool.graph.taxonomy import (
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 from graphtool.retrieval import ChunkEmbeddingRecord, JsonChunkEmbeddingStore
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import document_content_hash, source_key
 
 T = TypeVar("T")
@@ -308,7 +310,11 @@ def test_synchronize_documents_forwards_chunk_generation_worker_validation(tmp_p
     assert knowledge_base_store.exists() is False
 
 
-def test_synchronize_documents_adds_only_pending_source(tmp_path):
+def test_synchronize_documents_adds_only_pending_source(
+    caplog,
+    monkeypatch,
+    tmp_path,
+):
     graph_store = JsonGraphStore(tmp_path / "graphs")
     chunk_store = JsonChunkStore(tmp_path / "chunks")
     processed_chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
@@ -322,6 +328,9 @@ def test_synchronize_documents_adds_only_pending_source(tmp_path):
             )
         ]
     )
+    logger = logging.getLogger(LOGGER_NAME)
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level("INFO", logger=LOGGER_NAME)
 
     result = synchronize_documents(
         {
@@ -338,6 +347,18 @@ def test_synchronize_documents_adds_only_pending_source(tmp_path):
 
     assert result.added_sources == ["docs/pending.md"]
     assert result.unchanged_sources == ["docs/processed.md"]
+    assert (
+        "Knowledge graph changes: 1 added, 0 changed, 0 removed, 1 unchanged"
+        in caplog.text
+    )
+    assert (
+        "[1/1] Building knowledge graph: docs/pending.md (1 chunk)"
+        in caplog.text
+    )
+    assert (
+        "Built knowledge graph: docs/pending.md (1 entity, 0 relationships)"
+        in caplog.text
+    )
     assert len(fake.calls) == 1
     assert graph_store.exists("docs/pending.md") is True
     assert chunk_store.load("docs/pending.md")

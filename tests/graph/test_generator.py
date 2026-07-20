@@ -605,12 +605,12 @@ def test_generate_knowledge_graph_logs_generation_counters(tmp_path):
         assert len(log_files) == 1
         text = log_files[0].read_text(encoding="utf-8")
         assert (
-            "INFO Generated chunk graph source=doc.md chunk=doc-chunk-0000 "
+            "DEBUG Generated chunk graph source=doc.md chunk=doc-chunk-0000 "
             "raw_nodes=3 kept_nodes=2 dropped_structural_nodes=1 "
             "raw_edges=2 kept_edges=1 dropped_edges=1"
         ) in text
         assert (
-            "INFO Generated document graph source=doc.md chunks=1 "
+            "DEBUG Generated document graph source=doc.md chunks=1 "
             "raw_nodes=3 kept_nodes=2 dropped_structural_nodes=1 "
             "raw_edges=2 kept_edges=1 dropped_edges=1 final_nodes=2 final_edges=1 "
             "cached_chunks=0 generated_chunks=1 extraction_requests=1"

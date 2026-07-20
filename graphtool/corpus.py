@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +23,10 @@ from graphtool.graph.taxonomy import (
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
 from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import document_content_hash
+
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 @dataclass(frozen=True)
@@ -91,11 +95,27 @@ def synchronize_documents(
     unchanged_sources = sorted(
         current_sources - set(added_sources) - set(changed_sources)
     )
+    RUN_LOGGER.info(
+        "Knowledge graph changes: %s added, %s changed, %s removed, %s unchanged",
+        len(added_sources),
+        len(changed_sources),
+        len(deleted_sources),
+        len(unchanged_sources),
+    )
 
     prepared = []
-    for source in [*added_sources, *changed_sources]:
+    sources_to_prepare = [*added_sources, *changed_sources]
+    for index, source in enumerate(sources_to_prepare, start=1):
         markdown = documents[source]
         chunks = chunk_markdown(markdown, source)
+        RUN_LOGGER.info(
+            "[%s/%s] Building knowledge graph: %s (%s %s)",
+            index,
+            len(sources_to_prepare),
+            source,
+            len(chunks),
+            "chunk" if len(chunks) == 1 else "chunks",
+        )
         resolver = _make_semantic_resolver(
             llm,
             graph_embedding_store,
@@ -117,6 +137,14 @@ def synchronize_documents(
             taxonomy_suggestion_store=suggestion_buffer,
             extraction_store=chunk_extraction_store,
             max_workers=chunk_generation_workers,
+        )
+        RUN_LOGGER.info(
+            "Built knowledge graph: %s (%s %s, %s %s)",
+            source,
+            len(graph.nodes),
+            "entity" if len(graph.nodes) == 1 else "entities",
+            len(graph.edges),
+            "relationship" if len(graph.edges) == 1 else "relationships",
         )
         prepared.append(
             _PreparedDocument(

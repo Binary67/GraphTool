@@ -130,7 +130,7 @@ def log_document_graph(
     kept_nodes = sum(generated.kept_nodes for generated in generated_chunks)
     raw_edges = sum(generated.raw_edges for generated in generated_chunks)
     kept_edges = sum(generated.kept_edges for generated in generated_chunks)
-    RUN_LOGGER.info(
+    RUN_LOGGER.debug(
         "Generated document graph source=%s chunks=%s raw_nodes=%s kept_nodes=%s "
         "dropped_structural_nodes=%s raw_edges=%s kept_edges=%s dropped_edges=%s "
         "final_nodes=%s final_edges=%s cached_chunks=%s generated_chunks=%s "
@@ -228,7 +228,7 @@ def _normalize_structural_text(value: str) -> str:
 
 
 def _log_chunk_graph(chunk: Chunk, generated: GeneratedChunkGraph) -> None:
-    RUN_LOGGER.info(
+    RUN_LOGGER.debug(
         "Generated chunk graph source=%s chunk=%s raw_nodes=%s kept_nodes=%s "
         "dropped_structural_nodes=%s raw_edges=%s kept_edges=%s dropped_edges=%s",
         chunk.source,

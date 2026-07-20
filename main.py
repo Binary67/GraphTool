@@ -60,7 +60,11 @@ def main() -> None:
             audio_transcriber=runtime.audio_transcriber,
             audio_cache_dir=runtime.paths.audio_transcriptions_dir,
         )
-        logger.info("Loaded %s documents", len(documents))
+        logger.info(
+            "Loaded %s %s",
+            len(documents),
+            "document" if len(documents) == 1 else "documents",
+        )
 
         sync_result = synchronize_documents(
             documents,
@@ -81,7 +85,8 @@ def main() -> None:
             ),
         )
         logger.info(
-            "Synchronized documents added=%s changed=%s deleted=%s unchanged=%s",
+            "Synchronization complete: %s added, %s changed, %s removed, "
+            "%s unchanged",
             len(sync_result.added_sources),
             len(sync_result.changed_sources),
             len(sync_result.deleted_sources),
@@ -95,7 +100,11 @@ def main() -> None:
             runtime.paths.visualizations_dir,
             knowledge_base_store=runtime.knowledge_base_store,
         )
-        logger.info("Exported %s visualizations", len(visualization_paths))
+        logger.info(
+            "Exported %s %s",
+            len(visualization_paths),
+            "visualization" if len(visualization_paths) == 1 else "visualizations",
+        )
 
         print("Visualizations:")
         for path in visualization_paths:

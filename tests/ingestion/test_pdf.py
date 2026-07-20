@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 from pypdf import PdfWriter
@@ -149,6 +150,7 @@ def test_convert_pdf_keeps_exact_bounded_context_tail(monkeypatch, tmp_path):
 
 
 def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
+    caplog,
     monkeypatch,
     tmp_path,
 ):
@@ -157,6 +159,9 @@ def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
     path.write_bytes(b"pdf")
     first_llm = FakeLLM([_conversion((1, "# Cached"))])
     cache_dir = tmp_path / "cache"
+    logger = logging.getLogger(LOGGER_NAME)
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level("INFO", logger=LOGGER_NAME)
 
     expected = convert_pdf_to_markdown(
         path,
@@ -185,6 +190,13 @@ def test_convert_pdf_uses_complete_cache_without_rendering_or_llm(
     assert actual == expected
     assert render_calls == [[1]]
     assert second_llm.calls == []
+    assert "Converting content for documents/manual.pdf (1 page)" in caplog.text
+    assert "Processed documents/manual.pdf: page 1 of 1" in caplog.text
+    assert "Finished content conversion for documents/manual.pdf" in caplog.text
+    assert (
+        "Using cached content conversion for documents/manual.pdf (1 page)"
+        in caplog.text
+    )
 
 
 def test_convert_pdf_resumes_validated_batches_after_failure(monkeypatch, tmp_path):

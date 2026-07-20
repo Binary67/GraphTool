@@ -1,4 +1,5 @@
 import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 
 from graphtool.ingestion import presentation
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import source_key
 
 
@@ -29,13 +31,20 @@ def _fake_soffice(monkeypatch, calls, *, page_count=2):
     monkeypatch.setattr(presentation.subprocess, "run", fake_run)
 
 
-def test_convert_pptx_to_pdf_caches_by_source_hash(monkeypatch, tmp_path):
+def test_convert_pptx_to_pdf_caches_by_source_hash(
+    caplog,
+    monkeypatch,
+    tmp_path,
+):
     path = tmp_path / "slides.pptx"
     path.write_bytes(b"first")
     cache_dir = tmp_path / "cache"
     source = "documents/slides.pptx"
     calls = []
     _fake_soffice(monkeypatch, calls)
+    logger = logging.getLogger(LOGGER_NAME)
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level("INFO", logger=LOGGER_NAME)
 
     first = presentation.convert_pptx_to_pdf(path, source, cache_dir)
     second = presentation.convert_pptx_to_pdf(path, source, cache_dir)
@@ -48,6 +57,15 @@ def test_convert_pptx_to_pdf_caches_by_source_hash(monkeypatch, tmp_path):
     assert manifest["complete"] is True
     assert manifest["page_count"] == 2
     assert manifest["pdf_hash"]
+    assert "Converting PowerPoint to PDF: documents/slides.pptx" in caplog.text
+    assert (
+        "Converted PowerPoint to PDF: documents/slides.pptx (2 slides)"
+        in caplog.text
+    )
+    assert (
+        "Using cached PowerPoint PDF for documents/slides.pptx (2 slides)"
+        in caplog.text
+    )
 
     path.write_bytes(b"changed")
     presentation.convert_pptx_to_pdf(path, source, cache_dir)

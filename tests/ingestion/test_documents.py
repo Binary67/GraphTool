@@ -1,6 +1,9 @@
+import logging
+
 import pytest
 
 from graphtool.ingestion.documents import load_documents
+from graphtool.run_logging import LOGGER_NAME
 
 
 def test_load_documents_returns_empty_for_missing_directory(tmp_path):
@@ -18,6 +21,7 @@ def test_load_documents_returns_empty_for_missing_directory(tmp_path):
 
 
 def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
+    caplog,
     monkeypatch,
     tmp_path,
 ):
@@ -55,6 +59,9 @@ def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
     llm = object()
     cache_dir = tmp_path / "cache"
     presentation_cache_dir = tmp_path / "presentation-cache"
+    logger = logging.getLogger(LOGGER_NAME)
+    monkeypatch.setattr(logger, "propagate", True)
+    caplog.set_level("INFO", logger=LOGGER_NAME)
 
     documents = load_documents(
         documents_dir,
@@ -83,6 +90,16 @@ def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
             cache_dir,
         )
     ]
+    assert (
+        "Found 3 supported documents: 1 Markdown, 1 PDF, 1 PowerPoint"
+        in caplog.text
+    )
+    assert "[1/3] Reading Markdown: documents/a.MD" in caplog.text
+    assert "[2/3] Processing PDF: documents/guides/manual.PDF" in caplog.text
+    assert (
+        "[3/3] Processing PowerPoint: documents/guides/slides.PPTX"
+        in caplog.text
+    )
 
 
 def test_load_documents_does_not_return_partial_results_on_pdf_failure(

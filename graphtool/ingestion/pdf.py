@@ -97,9 +97,21 @@ def convert_pdf_to_markdown(
         if manifest.complete and markdown_path.exists():
             markdown = markdown_path.read_text(encoding="utf-8")
             if _text_hash(markdown) == manifest.markdown_hash:
+                RUN_LOGGER.info(
+                    "Using cached content conversion for %s (%s %s)",
+                    source,
+                    manifest.page_count,
+                    _page_unit(source, manifest.page_count),
+                )
                 return markdown
 
     page_texts = _extract_page_texts(pdf_path, source)
+    RUN_LOGGER.info(
+        "Converting content for %s (%s %s)",
+        source,
+        len(page_texts),
+        _page_unit(source, len(page_texts)),
+    )
     expected_manifest = _PdfConversionManifest(
         source_hash=source_hash,
         model=llm.text_model,
@@ -130,6 +142,11 @@ def convert_pdf_to_markdown(
         if batch_path.exists():
             conversion = PdfBatchConversion.model_validate_json(batch_path.read_text())
             conversion = _validate_conversion(conversion, page_numbers, source)
+            RUN_LOGGER.debug(
+                "Using cached content batch source=%s pages=%s",
+                source,
+                page_numbers,
+            )
         else:
             if pdftoppm is None:
                 pdftoppm = shutil.which("pdftoppm")
@@ -152,6 +169,13 @@ def convert_pdf_to_markdown(
                 source,
             )
             _write_model_atomic(batch_path, conversion)
+            RUN_LOGGER.info(
+                "Processed %s: %s %s of %s",
+                source,
+                _page_unit(source, len(page_numbers)),
+                _page_range(page_numbers),
+                len(page_texts),
+            )
 
         converted_pages.extend(conversion.pages)
         heading_path = conversion.ending_heading_path
@@ -167,7 +191,19 @@ def convert_pdf_to_markdown(
         update={"complete": True, "markdown_hash": _text_hash(markdown)}
     )
     _write_model_atomic(manifest_path, completed_manifest)
+    RUN_LOGGER.info("Finished content conversion for %s", source)
     return markdown
+
+
+def _page_unit(source: str, count: int) -> str:
+    unit = "slide" if Path(source).suffix.lower() == ".pptx" else "page"
+    return unit if count == 1 else f"{unit}s"
+
+
+def _page_range(page_numbers: list[int]) -> str:
+    if len(page_numbers) == 1:
+        return str(page_numbers[0])
+    return f"{page_numbers[0]}-{page_numbers[-1]}"
 
 
 def _extract_page_texts(pdf_path: Path, source: str) -> list[str]:
