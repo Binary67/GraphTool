@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import TypeVar
@@ -218,6 +219,43 @@ def test_synchronize_documents_skips_unchanged_sources(tmp_path):
     assert fake.calls == []
 
 
+def test_synchronize_documents_rebuilds_legacy_ingestion_fingerprint(tmp_path):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    source = "docs/processed.md"
+    content = "# Processed\nText."
+    chunk = _chunk(source, content, "Processed")
+    graph = _graph(source, chunk, "processed", "Processed")
+    legacy_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    graph_store.save(
+        graph.model_copy(
+            update={
+                "metadata": graph.metadata.model_copy(
+                    update={"content_hash": legacy_hash}
+                )
+            }
+        )
+    )
+    chunk_store.save(source, [chunk])
+    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    fake = FakeLLM([_extracted_graph([])])
+
+    result = synchronize_documents(
+        {source: content},
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+    )
+
+    assert result.changed_sources == [source]
+    assert len(fake.calls) == 1
+    assert graph_store.load(source).metadata.content_hash == document_content_hash(
+        content
+    )
+
+
 def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_cache(
     tmp_path,
 ):
@@ -226,8 +264,8 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
     knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
     extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
     source = "docs/guide.md"
-    first_section = f"# First\n{'a' * 3100}"
-    second_section = f"# Second\n{'b' * 3100}"
+    first_section = f"# First\n{'alpha ' * 4100}"
+    second_section = f"# Second\n{'beta ' * 4100}"
     original = f"{first_section}\n\n{second_section}"
     initial = FakeLLM(
         [
@@ -248,7 +286,7 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
         chunk_extraction_store=extraction_store,
         chunk_generation_workers=1,
     )
-    replacement = f"{first_section}\n\n# Third\n{'c' * 3100}"
+    replacement = f"{first_section}\n\n# Third\n{'gamma ' * 4100}"
     changed = FakeLLM(
         [
             _extracted_graph(
@@ -706,7 +744,7 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
     new_source = "docs/new.md"
     new_markdown = (
         "# OpenAI organization\nFirst mention.\n\n"
-        f"{'Context. ' * 375}\n\n"
+        f"{'Context. ' * 2200}\n\n"
         "# OpenAI company\nSecond mention."
     )
 

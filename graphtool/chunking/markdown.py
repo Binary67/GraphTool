@@ -1,13 +1,17 @@
 import re
 from dataclasses import dataclass
 
+import tiktoken
+
 from graphtool.chunking.types import Chunk
 from graphtool.source import source_key
 
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _PAGE_MARKER_PATTERN = re.compile(r"^<!--\s*graphtool:page=(\d+)\s*-->$")
-_TARGET_CHARS = 3000
-_MAX_CHARS = 6000
+# GPT-5-family text encoding.
+_ENCODING = tiktoken.get_encoding("o200k_base")
+_TARGET_TOKENS = 4000
+_MAX_TOKENS = 8000
 _SECTION_SEPARATOR = "\n\n"
 
 
@@ -32,7 +36,7 @@ def chunk_markdown(
             page_end=section.page_end,
         )
         for section in sections
-        for text in _split_text(section.text, _MAX_CHARS)
+        for text in _split_text(section.text, _MAX_TOKENS)
         if _has_content(text)
     ]
     packed = _pack_fragments(fragments)
@@ -64,7 +68,10 @@ def _pack_fragments(
             continue
 
         combined_text = f"{current.text}{_SECTION_SEPARATOR}{fragment.text}"
-        if len(current.text) < _TARGET_CHARS and len(combined_text) <= _MAX_CHARS:
+        if (
+            _token_count(current.text) < _TARGET_TOKENS
+            and _token_count(combined_text) <= _MAX_TOKENS
+        ):
             current = _Fragment(
                 text=combined_text,
                 heading_path=_common_heading_path(
@@ -167,24 +174,24 @@ def _last_page(left: int | None, right: int | None) -> int | None:
     return right if right is not None else left
 
 
-def _split_text(text: str, max_chars: int) -> list[str]:
-    if len(text) <= max_chars:
+def _split_text(text: str, max_tokens: int) -> list[str]:
+    if _token_count(text) <= max_tokens:
         return [text]
 
     chunks: list[str] = []
     current = ""
 
     for paragraph in _split_paragraphs(text):
-        if len(paragraph) > max_chars:
+        if _token_count(paragraph) > max_tokens:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(_split_long_paragraph(paragraph, max_chars))
+            chunks.extend(_split_long_paragraph(paragraph, max_tokens))
             continue
 
         if not current:
             current = paragraph
-        elif len(current) + 2 + len(paragraph) <= max_chars:
+        elif _token_count(f"{current}\n\n{paragraph}") <= max_tokens:
             current = f"{current}\n\n{paragraph}"
         else:
             chunks.append(current)
@@ -201,12 +208,12 @@ def _split_paragraphs(text: str) -> list[str]:
     return [paragraph.strip() for paragraph in paragraphs if paragraph.strip()]
 
 
-def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
+def _split_long_paragraph(paragraph: str, max_tokens: int) -> list[str]:
     chunks: list[str] = []
     remaining = paragraph.strip()
 
-    while len(remaining) > max_chars:
-        split_at = _split_index(remaining, max_chars)
+    while _token_count(remaining) > max_tokens:
+        split_at = _split_index(remaining, max_tokens)
         chunks.append(remaining[:split_at].rstrip())
         remaining = remaining[split_at:].lstrip()
 
@@ -216,13 +223,23 @@ def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _split_index(text: str, max_chars: int) -> int:
+def _split_index(text: str, max_tokens: int) -> int:
+    encoded = _ENCODING.encode(text, disallowed_special=())
+    prefix = _ENCODING.decode(encoded[:max_tokens])
+    split_limit = min(len(prefix), len(text))
+    while _token_count(text[:split_limit]) > max_tokens:
+        split_limit -= 1
+
     whitespace_indexes = [
-        match.start() for match in re.finditer(r"\s+", text[: max_chars + 1])
+        match.start() for match in re.finditer(r"\s+", text[: split_limit + 1])
     ]
     if whitespace_indexes:
         split_at = whitespace_indexes[-1]
-        if split_at >= max_chars // 2:
+        if split_at >= split_limit // 2:
             return split_at
 
-    return max_chars
+    return split_limit
+
+
+def _token_count(text: str) -> int:
+    return len(_ENCODING.encode(text, disallowed_special=()))

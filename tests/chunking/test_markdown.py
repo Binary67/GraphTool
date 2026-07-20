@@ -1,5 +1,13 @@
+import tiktoken
+
 from graphtool.chunking.markdown import chunk_markdown
 from graphtool.source import source_key
+
+_ENCODING = tiktoken.get_encoding("o200k_base")
+
+
+def _token_count(text: str) -> int:
+    return len(_ENCODING.encode(text, disallowed_special=()))
 
 
 def test_chunk_markdown_merges_neighboring_sections_and_preserves_headings():
@@ -22,15 +30,15 @@ def test_chunk_markdown_returns_empty_list_for_empty_markdown():
 
 def test_chunk_markdown_closes_chunk_after_crossing_soft_target():
     markdown = (
-        f"# Guide\n{'a' * 2000}\n\n"
-        f"## Details\n{'b' * 1500}\n\n"
+        f"# Guide\n{'alpha ' * 2500}\n\n"
+        f"## Details\n{'beta ' * 2000}\n\n"
         "## Next\nShort."
     )
 
     chunks = chunk_markdown(markdown, "guide.md")
 
     assert len(chunks) == 2
-    assert 3000 < len(chunks[0].text) <= 6000
+    assert 4000 < _token_count(chunks[0].text) <= 8000
     assert "## Details" in chunks[0].text
     assert "## Next" not in chunks[0].text
     assert chunks[0].heading_path == ["Guide"]
@@ -38,37 +46,40 @@ def test_chunk_markdown_closes_chunk_after_crossing_soft_target():
 
 
 def test_chunk_markdown_does_not_merge_past_hard_ceiling():
-    markdown = f"# First\n{'a' * 2900}\n\n# Second\n{'b' * 3200}"
+    markdown = (
+        f"# First\n{'alpha ' * 3900}\n\n"
+        f"# Second\n{'beta ' * 4200}"
+    )
 
     chunks = chunk_markdown(markdown, "separate.md")
 
     assert len(chunks) == 2
     assert chunks[0].heading_path == ["First"]
     assert chunks[1].heading_path == ["Second"]
-    assert all(len(chunk.text) <= 6000 for chunk in chunks)
+    assert all(_token_count(chunk.text) <= 8000 for chunk in chunks)
 
 
 def test_chunk_markdown_splits_oversized_sections_by_paragraph():
-    first_paragraph = "alpha " * 700
-    second_paragraph = "beta " * 700
+    first_paragraph = "alpha " * 4500
+    second_paragraph = "beta " * 4500
     markdown = f"# Notes\n{first_paragraph}\n\n{second_paragraph}"
 
     chunks = chunk_markdown(markdown, "notes.md")
 
     assert len(chunks) == 2
-    assert all(len(chunk.text) <= 6000 for chunk in chunks)
+    assert all(_token_count(chunk.text) <= 8000 for chunk in chunks)
     assert all(chunk.heading_path == ["Notes"] for chunk in chunks)
     assert chunks[0].text.startswith("# Notes")
     assert chunks[1].text.startswith("beta")
 
 
 def test_chunk_markdown_splits_single_oversized_paragraph_at_whitespace():
-    markdown = "# Long\n" + "word " * 1500
+    markdown = "# Long\n" + "word " * 9000
 
     chunks = chunk_markdown(markdown, "long.md")
 
     assert len(chunks) == 2
-    assert all(len(chunk.text) <= 6000 for chunk in chunks)
+    assert all(_token_count(chunk.text) <= 8000 for chunk in chunks)
     assert all(chunk.text == chunk.text.strip() for chunk in chunks)
     assert chunks[0].text.startswith("# Long")
 

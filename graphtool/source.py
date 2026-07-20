@@ -2,9 +2,13 @@ import hashlib
 import re
 from pathlib import PurePosixPath
 
+# Bump when ingestion semantics change so persisted graphs rebuild.
+INGESTION_VERSION = 2
+
 
 def document_content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    payload = f"graphtool-ingestion-v{INGESTION_VERSION}\0{content}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def source_key(source: str) -> str:
