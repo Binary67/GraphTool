@@ -14,6 +14,12 @@ wheels/
 documents/**
 !documents/
 !documents/.gitkeep
+!documents/markdown/
+!documents/markdown/.gitkeep
+!documents/pdfs/
+!documents/pdfs/.gitkeep
+!documents/recordings/
+!documents/recordings/.gitkeep
 data/
 output/
 

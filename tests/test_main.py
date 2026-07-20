@@ -12,6 +12,7 @@ class FakeRuntime:
         self.graph_store = object()
         self.chunk_store = object()
         self.fast_llm = object()
+        self.audio_transcriber = object()
         self.knowledge_base_store = object()
         self.graph_embedding_store = object()
         self.knowledge_base_embedding_store = object()
@@ -71,6 +72,7 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
         root=tmp_path,
         documents_dir=tmp_path / "documents",
         pdf_conversions_dir=tmp_path / "pdf-conversions",
+        audio_transcriptions_dir=tmp_path / "audio-transcriptions",
         dropped_edges_path=tmp_path / "dropped_edges.jsonl",
         logs_dir=tmp_path / "logs",
         visualizations_dir=tmp_path / "visualizations",
@@ -141,6 +143,8 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
         source_root=paths.root,
         pdf_llm=runtime.fast_llm,
         pdf_cache_dir=paths.pdf_conversions_dir,
+        audio_transcriber=runtime.audio_transcriber,
+        audio_cache_dir=paths.audio_transcriptions_dir,
     )
     main_module.create_azure_openai_agent_model.assert_called_once_with(config)
     main_module.create_knowledge_agent.assert_called_once_with(agent_model, runtime)

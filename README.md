@@ -1,8 +1,18 @@
 # GraphTool
 
-GraphTool builds and searches a knowledge graph from documents placed under
-`documents/`. Markdown (`.md`) and PDF (`.pdf`) inputs are discovered
-recursively.
+GraphTool builds and searches a knowledge graph from files placed under
+`documents/`. Markdown, PDF, and audio inputs are discovered recursively. A
+recommended layout is:
+
+```text
+documents/
+├── markdown/
+├── pdfs/
+└── recordings/
+```
+
+The folders are organizational; supported files can be nested anywhere under
+`documents/` and are identified by extension.
 
 PDFs are rendered page by page and converted to Markdown with the configured
 `AZURE_OPENAI_FAST_DEPLOYMENT`. Converted pages are cached under
@@ -11,18 +21,34 @@ PDFs are rendered page by page and converted to Markdown with the configured
 ## PDF requirements
 
 Install the project dependencies with `uv sync`. PDF rendering also requires
-Poppler's `pdftoppm` executable:
+Poppler's `pdftoppm` executable. Audio transcription requires the `ffmpeg` and
+`ffprobe` executables:
 
 ```sh
 # macOS
 brew install poppler
+brew install ffmpeg
 
 # Ubuntu or Debian
 sudo apt-get install poppler-utils
+sudo apt-get install ffmpeg
 ```
 
 The configured fast Azure OpenAI deployment must support image input and
 structured output. Password-protected PDFs are not supported.
+
+## Audio transcription
+
+GraphTool accepts `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.ogg`,
+`.wav`, and `.webm` files. Audio is normalized to mono 16 kHz MP3 at 64 kbps,
+split into approximately 20-minute chunks with five seconds of overlap, and
+transcribed sequentially with `AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT`.
+
+Chunk transcripts and assembled Markdown are cached under
+`data/audio_transcriptions/`. This directory is generated data; put original
+recordings under `documents/`, preferably `documents/recordings/`. Interrupted
+conversions resume from the last cached chunk. The configured deployment should
+use `gpt-4o-transcribe`.
 
 ## Knowledge agent
 

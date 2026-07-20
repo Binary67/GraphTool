@@ -1,5 +1,6 @@
 import base64
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, TypeVar
 
 from langchain_core.language_models import BaseChatModel
@@ -65,6 +66,31 @@ class AzureOpenAIClient:
             )
             vectors.extend(list(item.embedding) for item in response.data)
         return vectors
+
+
+class AzureOpenAIAudioTranscriber:
+    def __init__(self, config: AzureOpenAIConfig) -> None:
+        self._deployment = config.transcription_deployment
+        self._client = OpenAI(base_url=config.endpoint, api_key=config.api_key)
+
+    @property
+    def transcription_model(self) -> str:
+        return self._deployment
+
+    def transcribe_audio(
+        self,
+        path: str | Path,
+        *,
+        prompt: str | None = None,
+    ) -> str:
+        with Path(path).open("rb") as audio_file:
+            response = self._client.audio.transcriptions.create(
+                model=self._deployment,
+                file=audio_file,
+                prompt=prompt,
+                response_format="json",
+            )
+        return response.text
 
 
 def create_azure_openai_agent_model(

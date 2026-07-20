@@ -12,7 +12,7 @@ from graphtool.graph import (
     JsonTaxonomySuggestionStore,
     KnowledgeGraph,
 )
-from graphtool.llm import AzureOpenAIClient
+from graphtool.llm import AzureOpenAIAudioTranscriber, AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.retrieval import (
     JsonChunkEmbeddingStore,
@@ -31,6 +31,7 @@ DEFAULT_MAX_LOG_FILES = 3
 class GraphToolPaths:
     root: Path
     documents_dir: Path
+    audio_transcriptions_dir: Path
     pdf_conversions_dir: Path
     chunks_dir: Path
     chunk_extractions_dir: Path
@@ -57,6 +58,7 @@ class GraphToolRuntime:
     chunk_extraction_store: JsonChunkExtractionStore
     chunk_embedding_store: JsonChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
+    audio_transcriber: AzureOpenAIAudioTranscriber
     _search_retriever: PreparedHybridRetriever | None = field(
         default=None,
         init=False,
@@ -95,6 +97,7 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
     return GraphToolPaths(
         root=project_root,
         documents_dir=project_root / "documents",
+        audio_transcriptions_dir=data_dir / "audio_transcriptions",
         pdf_conversions_dir=data_dir / "pdf_conversions",
         chunks_dir=data_dir / "chunks",
         chunk_extractions_dir=data_dir / "chunk_extractions",
@@ -140,4 +143,5 @@ def create_runtime(
             config,
             text_deployment=config.fast_deployment,
         ),
+        audio_transcriber=AzureOpenAIAudioTranscriber(config),
     )

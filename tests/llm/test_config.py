@@ -9,6 +9,10 @@ def _set_required_env(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_AGENT_DEPLOYMENT", "agent-deployment")
     monkeypatch.setenv("AZURE_OPENAI_FAST_DEPLOYMENT", "fast-deployment")
     monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "embedding-deployment")
+    monkeypatch.setenv(
+        "AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT",
+        "transcription-deployment",
+    )
 
 
 def test_loads_azure_openai_config(monkeypatch):
@@ -32,6 +36,7 @@ def test_loads_azure_openai_config(monkeypatch):
     assert config.agent_deployment == "agent-deployment"
     assert config.fast_deployment == "fast-deployment"
     assert config.embedding_deployment == "embedding-deployment"
+    assert config.transcription_deployment == "transcription-deployment"
     assert config.embedding_batch_size == 4
     assert config.entity_resolution_min_candidate_similarity == 0.80
 
@@ -44,6 +49,7 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     monkeypatch.delenv("AZURE_OPENAI_AGENT_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_FAST_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_EMBEDDING_BATCH_SIZE", raising=False)
     monkeypatch.delenv(
         "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY",
@@ -60,6 +66,7 @@ def test_missing_azure_openai_config_raises_clear_error(monkeypatch):
     assert "AZURE_OPENAI_AGENT_DEPLOYMENT" in message
     assert "AZURE_OPENAI_FAST_DEPLOYMENT" in message
     assert "AZURE_OPENAI_EMBEDDING_DEPLOYMENT" in message
+    assert "AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT" in message
 
 
 def test_missing_agent_deployment_raises_clear_error(monkeypatch):

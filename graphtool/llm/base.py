@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol, TypeVar
 
 from graphtool.llm.types import LLMMessage, LLMTextResponse
@@ -37,4 +38,17 @@ class EmbeddingClient(Protocol):
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed multiple text values."""
+        ...
+
+
+class AudioTranscriptionClient(Protocol):
+    """Interface for file-based audio transcription providers."""
+
+    @property
+    def transcription_model(self) -> str:
+        """Return the transcription model or deployment identifier."""
+        ...
+
+    def transcribe_audio(self, path: str | Path, *, prompt: str | None = None) -> str:
+        """Transcribe an audio file without summarizing it."""
         ...

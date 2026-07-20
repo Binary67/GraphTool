@@ -60,6 +60,8 @@ def main() -> None:
             source_root=runtime.paths.root,
             pdf_llm=runtime.fast_llm,
             pdf_cache_dir=runtime.paths.pdf_conversions_dir,
+            audio_transcriber=runtime.audio_transcriber,
+            audio_cache_dir=runtime.paths.audio_transcriptions_dir,
         )
         logger.info("Loaded %s documents", len(documents))
 

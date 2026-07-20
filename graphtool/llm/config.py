@@ -10,6 +10,7 @@ DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY = 0.80
 FAST_DEPLOYMENT_ENV = "AZURE_OPENAI_FAST_DEPLOYMENT"
 AGENT_DEPLOYMENT_ENV = "AZURE_OPENAI_AGENT_DEPLOYMENT"
 EMBEDDING_DEPLOYMENT_ENV = "AZURE_OPENAI_EMBEDDING_DEPLOYMENT"
+TRANSCRIPTION_DEPLOYMENT_ENV = "AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT"
 EMBEDDING_BATCH_SIZE_ENV = "AZURE_OPENAI_EMBEDDING_BATCH_SIZE"
 ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY_ENV = (
     "GRAPHTOOL_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY"
@@ -27,6 +28,7 @@ class AzureOpenAIConfig:
     agent_deployment: str
     fast_deployment: str
     embedding_deployment: str
+    transcription_deployment: str
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
     entity_resolution_min_candidate_similarity: float = (
         DEFAULT_ENTITY_RESOLUTION_MIN_CANDIDATE_SIMILARITY
@@ -42,6 +44,7 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
         AGENT_DEPLOYMENT_ENV,
         FAST_DEPLOYMENT_ENV,
         EMBEDDING_DEPLOYMENT_ENV,
+        TRANSCRIPTION_DEPLOYMENT_ENV,
     ]
     values = {name: os.getenv(name) for name in names}
     missing = [name for name, value in values.items() if not value]
@@ -56,6 +59,7 @@ def load_azure_openai_config() -> AzureOpenAIConfig:
         agent_deployment=cast(str, values[AGENT_DEPLOYMENT_ENV]),
         fast_deployment=cast(str, values[FAST_DEPLOYMENT_ENV]),
         embedding_deployment=cast(str, values[EMBEDDING_DEPLOYMENT_ENV]),
+        transcription_deployment=cast(str, values[TRANSCRIPTION_DEPLOYMENT_ENV]),
         embedding_batch_size=_embedding_batch_size(os.getenv(EMBEDDING_BATCH_SIZE_ENV)),
         entity_resolution_min_candidate_similarity=(
             _entity_resolution_min_candidate_similarity(

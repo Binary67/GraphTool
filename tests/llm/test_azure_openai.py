@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from graphtool.llm.azure_openai import (
+    AzureOpenAIAudioTranscriber,
     AzureOpenAIClient,
     create_azure_openai_agent_model,
 )
@@ -30,6 +31,7 @@ class FakeOpenAI:
         self.api_key = api_key
         self.responses = FakeResponses()
         self.embeddings = FakeEmbeddings()
+        self.audio = FakeAudio()
         FakeOpenAI.instances.append(self)
 
 
@@ -67,6 +69,20 @@ class FakeEmbeddingResponse:
         ]
 
 
+class FakeAudio:
+    def __init__(self):
+        self.transcriptions = FakeTranscriptions()
+
+
+class FakeTranscriptions:
+    def __init__(self):
+        self.create_calls = []
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return type("Transcription", (), {"text": "transcribed audio"})()
+
+
 class Person(BaseModel):
     name: str
 
@@ -78,6 +94,7 @@ def _config(**overrides):
         "agent_deployment": "agent-deployment",
         "fast_deployment": "fast-deployment",
         "embedding_deployment": "embedding-deployment",
+        "transcription_deployment": "transcription-deployment",
     }
     values.update(overrides)
     return AzureOpenAIConfig(**values)
@@ -116,6 +133,25 @@ def test_constructs_agent_model_with_dedicated_deployment(monkeypatch):
             "api_key": config.api_key,
         }
     ]
+
+
+def test_transcribes_audio_with_dedicated_deployment(monkeypatch, tmp_path):
+    FakeOpenAI.instances = []
+    monkeypatch.setattr("graphtool.llm.azure_openai.OpenAI", FakeOpenAI)
+    path = tmp_path / "chunk.mp3"
+    path.write_bytes(b"audio")
+
+    transcriber = AzureOpenAIAudioTranscriber(_config())
+    text = transcriber.transcribe_audio(path, prompt="Previous context")
+
+    assert transcriber.transcription_model == "transcription-deployment"
+    assert text == "transcribed audio"
+    call = FakeOpenAI.instances[0].audio.transcriptions.create_calls[0]
+    assert call["model"] == "transcription-deployment"
+    assert call["prompt"] == "Previous context"
+    assert call["response_format"] == "json"
+    assert call["file"].name == str(path)
+    assert call["file"].closed is True
 
 
 def test_generate_text_uses_responses_create(monkeypatch):

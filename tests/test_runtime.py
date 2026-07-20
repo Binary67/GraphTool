@@ -29,6 +29,14 @@ class FakeAzureOpenAIClient:
         ]
 
 
+class FakeAudioTranscriber:
+    instances = []
+
+    def __init__(self, config):
+        self.config = config
+        FakeAudioTranscriber.instances.append(self)
+
+
 def _config() -> AzureOpenAIConfig:
     return AzureOpenAIConfig(
         endpoint="https://example.openai.azure.com/openai/v1/",
@@ -36,12 +44,17 @@ def _config() -> AzureOpenAIConfig:
         agent_deployment="agent-deployment",
         fast_deployment="fast-deployment",
         embedding_deployment="embedding-deployment",
+        transcription_deployment="transcription-deployment",
     )
 
 
 def _runtime(monkeypatch, tmp_path):
     FakeAzureOpenAIClient.instances = []
     monkeypatch.setattr("graphtool.runtime.AzureOpenAIClient", FakeAzureOpenAIClient)
+    monkeypatch.setattr(
+        "graphtool.runtime.AzureOpenAIAudioTranscriber",
+        FakeAudioTranscriber,
+    )
     return create_runtime(_config(), paths=default_paths(tmp_path))
 
 
@@ -50,6 +63,7 @@ def test_default_paths_match_project_layout(tmp_path):
 
     assert paths.root == tmp_path
     assert paths.documents_dir == tmp_path / "documents"
+    assert paths.audio_transcriptions_dir == tmp_path / "data" / "audio_transcriptions"
     assert paths.pdf_conversions_dir == tmp_path / "data" / "pdf_conversions"
     assert paths.chunks_dir == tmp_path / "data" / "chunks"
     assert paths.chunk_extractions_dir == tmp_path / "data" / "chunk_extractions"
@@ -71,6 +85,10 @@ def test_default_paths_match_project_layout(tmp_path):
 def test_create_runtime_uses_fast_deployment_for_runtime_llm(monkeypatch, tmp_path):
     FakeAzureOpenAIClient.instances = []
     monkeypatch.setattr("graphtool.runtime.AzureOpenAIClient", FakeAzureOpenAIClient)
+    monkeypatch.setattr(
+        "graphtool.runtime.AzureOpenAIAudioTranscriber",
+        FakeAudioTranscriber,
+    )
     config = _config()
     paths = default_paths(tmp_path)
 
@@ -80,6 +98,7 @@ def test_create_runtime_uses_fast_deployment_for_runtime_llm(monkeypatch, tmp_pa
     assert runtime.fast_llm is FakeAzureOpenAIClient.instances[0]
     assert runtime.fast_llm.config is config
     assert runtime.fast_llm.text_deployment == "fast-deployment"
+    assert runtime.audio_transcriber.config is config
     assert runtime.chunk_extraction_store.load("docs/missing.md") == {}
 
 
