@@ -548,6 +548,32 @@ def test_completed_turn_keeps_one_clean_checkpoint():
     ]
 
 
+def test_reset_deletes_conversation_checkpoint():
+    model = ScriptedModel(
+        {
+            ResearchDecision: [
+                ResearchDecision(action="respond", response="First answer")
+            ],
+            SufficiencyDecision: [SufficiencyDecision(verdict="conversation")],
+        }
+    )
+    runtime = FakeRuntime([])
+    agent = create_knowledge_agent(model, runtime)
+    config = {"configurable": {"thread_id": "thread-a"}}
+    agent.ask("Hello", thread_id="thread-a")
+
+    agent.reset("thread-a")
+
+    assert list(agent._checkpointer.list(config)) == []
+
+
+def test_reset_rejects_empty_thread_id():
+    agent = create_knowledge_agent(ScriptedModel({}), FakeRuntime([]))
+
+    with pytest.raises(ValueError, match="Thread ID must not be empty"):
+        agent.reset(" ")
+
+
 def test_agent_rejects_invalid_input_and_missing_knowledge_base():
     model = ScriptedModel({})
     runtime = FakeRuntime([], knowledge_base_exists=False)

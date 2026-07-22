@@ -113,3 +113,29 @@ These limits can be changed with `compact_trigger_tokens` and
 `compact_recent_tokens` when creating the agent. The agent searches the local
 knowledge base up to five times per question and returns `status="partial"` when
 the available evidence remains incomplete.
+
+## Telegram bot
+
+Create a bot by sending `/newbot` to [BotFather](https://t.me/BotFather), then
+add its token and the numeric Telegram user IDs allowed to use it to `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_ALLOWED_USER_IDS=123456789
+```
+
+To find your numeric user ID, send the new bot a message before starting
+GraphTool and inspect the `message.from.id` value returned by Telegram's
+[`getUpdates`](https://core.telegram.org/bots/api#getupdates) Bot API method.
+Multiple allowed user IDs can be separated with commas. After ingesting the
+documents, start the bot with:
+
+```sh
+uv run python -m telegram_bot
+```
+
+The bot uses long polling, so it does not require a public webhook. Messages in
+the same private chat share conversation context while the process is running.
+In group chats, each user has separate context. Send `/new` to clear the current
+conversation. Restarting the bot clears all conversations because history is
+stored in memory.

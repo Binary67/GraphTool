@@ -76,6 +76,12 @@ class KnowledgeAgent:
         self._graph.update_state(config, result, as_node="cleanup")
         return response
 
+    def reset(self, thread_id: str) -> None:
+        normalized_thread_id = thread_id.strip()
+        if not normalized_thread_id:
+            raise ValueError("Thread ID must not be empty.")
+        self._checkpointer.delete_thread(normalized_thread_id)
+
 
 def create_knowledge_agent(
     model: BaseChatModel,
