@@ -1,13 +1,17 @@
 import asyncio
 import logging
+from contextlib import suppress
 
-from telegram import Chat, Update
+from telegram import Chat, Message, Update
+from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from graphtool.agents import AgentResponse, KnowledgeAgent
 from graphtool.retrieval import format_source_reference
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4_096
+TYPING_REFRESH_INTERVAL_SECONDS = 4
 START_MESSAGE = (
     "Send me a question about the GraphTool knowledge base. I will remember "
     "this conversation until the bot restarts. Send /new to start over."
@@ -85,23 +89,41 @@ class TelegramHandlers:
         if not question:
             return
         thread_id = telegram_thread_id(update)
+        typing_task = asyncio.create_task(self._show_typing(message))
         try:
-            async with self._agent_lock:
-                response = await asyncio.to_thread(
-                    self._agent.ask,
-                    question,
-                    thread_id=thread_id,
+            try:
+                async with self._agent_lock:
+                    response = await asyncio.to_thread(
+                        self._agent.ask,
+                        question,
+                        thread_id=thread_id,
+                    )
+            except Exception:
+                self._logger.exception(
+                    "Telegram agent request failed for thread %s",
+                    thread_id,
                 )
-        except Exception:
-            self._logger.exception(
-                "Telegram agent request failed for thread %s",
-                thread_id,
-            )
-            await message.reply_text(ERROR_MESSAGE)
-            return
+                await message.reply_text(ERROR_MESSAGE)
+                return
+        finally:
+            typing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await typing_task
 
         for part in split_telegram_message(format_agent_response(response)):
             await message.reply_text(part)
+
+    async def _show_typing(self, message: Message) -> None:
+        while True:
+            try:
+                await message.reply_chat_action(ChatAction.TYPING)
+            except TelegramError:
+                self._logger.warning(
+                    "Telegram typing indicator failed",
+                    exc_info=True,
+                )
+                return
+            await asyncio.sleep(TYPING_REFRESH_INTERVAL_SECONDS)
 
     def _is_authorized(self, update: Update) -> bool:
         user = update.effective_user

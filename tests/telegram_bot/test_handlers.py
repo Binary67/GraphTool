@@ -1,7 +1,9 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 
 from telegram import Chat
+from telegram.constants import ChatAction
 
 from graphtool.agents import AgentResponse
 from graphtool.retrieval import SourceReference
@@ -40,9 +42,26 @@ class FakeMessage:
     def __init__(self, text=None):
         self.text = text
         self.replies = []
+        self.chat_actions = []
 
     async def reply_text(self, text):
         self.replies.append(text)
+
+    async def reply_chat_action(self, action):
+        self.chat_actions.append(action)
+
+
+class BlockingAgent(FakeAgent):
+    def __init__(self, response):
+        super().__init__(response=response)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def ask(self, question, *, thread_id):
+        self.ask_calls.append((question, thread_id))
+        self.started.set()
+        self.release.wait()
+        return self.response
 
 
 def _update(*, user_id=123, chat_id=456, chat_type=Chat.PRIVATE, text=None):
@@ -107,6 +126,45 @@ def test_message_asks_agent_and_formats_sources():
         "GraphTool builds a graph.\n\n"
         "Sources:\n- documents/manual.pdf (pp. 2-3)"
     ]
+
+
+def test_message_shows_typing_until_agent_finishes(monkeypatch):
+    monkeypatch.setattr(
+        "telegram_bot.handlers.TYPING_REFRESH_INTERVAL_SECONDS",
+        0.01,
+    )
+    response = AgentResponse(
+        answer="Finished.",
+        status="complete",
+        search_count=1,
+    )
+    update = _update(text="Question")
+    agent = BlockingAgent(response)
+    handlers = TelegramHandlers(agent, frozenset({123}))
+
+    async def run():
+        task = asyncio.create_task(handlers.message(update, None))
+        try:
+            assert await asyncio.to_thread(agent.started.wait, 1)
+            async with asyncio.timeout(1):
+                while len(update.effective_message.chat_actions) < 2:
+                    await asyncio.sleep(0.001)
+        finally:
+            agent.release.set()
+        await task
+
+        action_count = len(update.effective_message.chat_actions)
+        await asyncio.sleep(0.02)
+        assert len(update.effective_message.chat_actions) == action_count
+
+    asyncio.run(run())
+
+    assert len(update.effective_message.chat_actions) >= 2
+    assert all(
+        action == ChatAction.TYPING
+        for action in update.effective_message.chat_actions
+    )
+    assert update.effective_message.replies == ["Finished."]
 
 
 def test_new_conversation_resets_current_thread():
