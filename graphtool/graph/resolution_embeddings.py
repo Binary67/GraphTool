@@ -1,11 +1,11 @@
 import hashlib
 import json
-import math
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+import numpy as np
+
 from graphtool.graph.embedding_store import NodeEmbeddingRecord
-from graphtool.graph.entity_matching import same_type_candidates
 from graphtool.graph.types import KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient
 
@@ -23,12 +23,19 @@ class ResolutionEmbeddings:
         self,
         client: EmbeddingClient,
         store: EmbeddingStore | None,
+        reusable_records: Sequence[NodeEmbeddingRecord] = (),
     ) -> None:
         self._client = client
         self._store = store
         self._records = store.load() if store is not None else {}
+        self._reusable_vectors = {
+            (record.embedding_model, record.embedding_input_hash): record.vector
+            for record in reusable_records
+        }
         self._relationship_contexts: dict[str, list[str]] = {}
         self._prefetched_vectors: dict[tuple[str, str], list[float]] = {}
+        self._node_inputs: dict[int, tuple[str, str]] = {}
+        self._normalized_vectors: dict[tuple[str, str], np.ndarray] = {}
 
     def prepare(
         self,
@@ -36,7 +43,8 @@ class ResolutionEmbeddings:
         incoming_nodes: Sequence[Node],
     ) -> None:
         self._relationship_contexts = _build_relationship_contexts(graphs)
-        self._prefetched_vectors = {}
+        self._prefetched_vectors = dict(self._reusable_vectors)
+        self._node_inputs = {}
         self._prefetch(incoming_nodes)
 
     def candidates(
@@ -47,21 +55,24 @@ class ResolutionEmbeddings:
         min_similarity: float,
         top_k: int,
     ) -> list[tuple[Node, float]]:
-        candidate_nodes = same_type_candidates(node, canonical_nodes)
-        if not candidate_nodes:
+        if not canonical_nodes:
             return []
 
-        incoming_vector = self._ensure([node])[0].vector
-        candidate_records = self._ensure(candidate_nodes)
+        incoming_record = self._ensure([node])[0]
+        candidate_records = self._ensure(canonical_nodes)
+        incoming_vector = self._normalized_vector(incoming_record)
+        candidate_vectors = np.stack(
+            [self._normalized_vector(record) for record in candidate_records]
+        )
+        scores = candidate_vectors @ incoming_vector
         scored = []
-        for candidate, record in zip(
-            candidate_nodes,
-            candidate_records,
+        for candidate, score in zip(
+            canonical_nodes,
+            scores,
             strict=True,
         ):
-            score = _cosine_similarity(incoming_vector, record.vector)
             if score >= min_similarity:
-                scored.append((candidate, score))
+                scored.append((candidate, float(score)))
 
         scored.sort(key=lambda item: (-item[1], item[0].id))
         return scored[:top_k]
@@ -84,11 +95,7 @@ class ResolutionEmbeddings:
         missing_by_key: dict[tuple[str, str], str] = {}
 
         for node in nodes:
-            text = node_embedding_text(
-                node,
-                self._relationship_contexts.get(node.id, []),
-            )
-            text_hash = embedding_input_hash(text)
+            text, text_hash = self._node_input(node)
             key = (embedding_model, text_hash)
             if key in self._prefetched_vectors:
                 continue
@@ -116,11 +123,7 @@ class ResolutionEmbeddings:
         embedding_model = self._client.embedding_model
 
         for node in nodes:
-            text = node_embedding_text(
-                node,
-                self._relationship_contexts.get(node.id, []),
-            )
-            text_hash = embedding_input_hash(text)
+            text, text_hash = self._node_input(node)
             existing = self._records.get(node.id)
             if (
                 existing is not None
@@ -165,6 +168,30 @@ class ResolutionEmbeddings:
 
         return [record for record in records if record is not None]
 
+    def _node_input(self, node: Node) -> tuple[str, str]:
+        key = id(node)
+        cached = self._node_inputs.get(key)
+        if cached is not None:
+            return cached
+        text = node_embedding_text(
+            node,
+            self._relationship_contexts.get(node.id, []),
+        )
+        value = (text, embedding_input_hash(text))
+        self._node_inputs[key] = value
+        return value
+
+    def _normalized_vector(self, record: NodeEmbeddingRecord) -> np.ndarray:
+        key = (record.embedding_model, record.embedding_input_hash)
+        cached = self._normalized_vectors.get(key)
+        if cached is not None:
+            return cached
+        vector = np.asarray(record.vector, dtype=np.float64)
+        norm = np.linalg.norm(vector)
+        normalized = vector if norm == 0.0 else vector / norm
+        self._normalized_vectors[key] = normalized
+        return normalized
+
 
 def node_embedding_text(
     node: Node,
@@ -204,18 +231,6 @@ def _build_relationship_contexts(
                     f"incoming {edge.label} from {source.label} ({source.type})"
                 )
     return contexts
-
-
-def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) != len(right):
-        return 0.0
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-    return sum(
-        a * b for a, b in zip(left, right, strict=True)
-    ) / (left_norm * right_norm)
 
 
 def _extend_unique(

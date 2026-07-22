@@ -1,8 +1,12 @@
 from datetime import datetime, timezone
 from typing import TypeVar, cast
 
-from graphtool.graph.embedding_store import JsonEmbeddingStore
+from graphtool.graph.embedding_store import JsonEmbeddingStore, NodeEmbeddingRecord
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
+from graphtool.graph.resolution_embeddings import (
+    embedding_input_hash,
+    node_embedding_text,
+)
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 
@@ -292,6 +296,52 @@ def test_combine_into_uses_updated_existing_candidates_for_each_node():
             "aliases: OpenAI organization"
         ],
     ]
+
+
+def test_combine_into_indexes_aliases_added_during_resolution():
+    llm = FakeLLM(
+        [
+            EntityResolutionDecision(
+                decision="merge",
+                target_node_id="acme",
+                confidence=0.95,
+                aliases_to_add=["The Lab"],
+            )
+        ]
+    )
+    resolver = SemanticEntityResolver(
+        llm,
+        FakeEmbeddingClient(
+            {
+                "Acme": [1.0, 0.0],
+                "The Lab": [0.0, 1.0],
+            }
+        ),
+    )
+
+    graph = resolver.combine_into(
+        KnowledgeGraph(
+            nodes=[Node(id="acme", label="Acme", type="Organization")],
+            edges=[],
+        ),
+        [
+            KnowledgeGraph(
+                nodes=[
+                    Node(
+                        id="acme-research",
+                        label="Acme Research",
+                        type="Organization",
+                    ),
+                    Node(id="the-lab", label="The Lab", type="Organization"),
+                ],
+                edges=[],
+            )
+        ],
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].aliases == ["Acme Research", "The Lab"]
+    assert len(llm.calls) == 1
 
 
 def test_resolver_uses_embeddings_and_llm_to_merge_and_remap_edges():
@@ -649,6 +699,33 @@ def test_resolver_reuses_matching_cached_embeddings(tmp_path):
 
     assert len(embedding.calls) == first_call_count
     assert store.load()["openai"].vector == [1.0, 0.0]
+
+
+def test_resolver_reuses_embedding_record_with_matching_input_hash(tmp_path):
+    node = Node(id="global-openai", label="OpenAI", type="Organization")
+    text = node_embedding_text(node)
+    reusable = NodeEmbeddingRecord(
+        node_id="document-openai",
+        embedding_model=FakeEmbeddingClient.embedding_model,
+        embedding_input_hash=embedding_input_hash(text),
+        vector=[1.0, 0.0],
+    )
+    embedding = FakeEmbeddingClient()
+    store = JsonEmbeddingStore(tmp_path / "global_embeddings.json")
+    resolver = SemanticEntityResolver(
+        FakeLLM(),
+        embedding,
+        store,
+        reusable_embedding_records=[reusable],
+    )
+
+    resolver.combine_into(
+        None,
+        [KnowledgeGraph(nodes=[node], edges=[])],
+    )
+
+    assert embedding.calls == []
+    assert store.load()[node.id].vector == [1.0, 0.0]
 
 
 def test_resolver_batches_uncached_candidate_embeddings():

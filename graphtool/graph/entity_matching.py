@@ -29,30 +29,84 @@ class EntityResolutionDecision(BaseModel):
     aliases_to_add: list[str] = Field(default_factory=list)
 
 
-def find_normalized_match(
-    node: Node,
-    canonical_nodes: Sequence[Node],
-) -> Node | None:
-    incoming_names = _normalized_names(node)
-    if not incoming_names:
-        return None
+class EntityCandidateIndex:
+    def __init__(self) -> None:
+        self._nodes_by_id: dict[str, Node] = {}
+        self._rank_by_id: dict[str, int] = {}
+        self._ids_by_name: dict[str, set[str]] = {}
+        self._ids_by_type: dict[str, set[str]] = {}
 
-    for candidate in canonical_nodes:
-        if comparable_node_types(node, candidate):
-            if incoming_names & _normalized_names(candidate):
-                return candidate
-    return None
+    def add(self, node: Node) -> None:
+        self._rank_by_id[node.id] = len(self._rank_by_id)
+        self._nodes_by_id[node.id] = node
+        self._add_to_indexes(node)
 
+    def replace(self, node: Node) -> None:
+        existing = self._nodes_by_id[node.id]
+        self._remove_from_indexes(existing)
+        self._nodes_by_id[node.id] = node
+        self._add_to_indexes(node)
 
-def same_type_candidates(
-    node: Node,
-    canonical_nodes: Sequence[Node],
-) -> list[Node]:
-    return [
-        candidate
-        for candidate in canonical_nodes
-        if comparable_node_types(node, candidate)
-    ]
+    def find_normalized_match(
+        self,
+        node: Node,
+        candidate_ids: set[str] | None,
+    ) -> Node | None:
+        matching_ids: set[str] = set()
+        for name in _normalized_names(node):
+            matching_ids.update(self._ids_by_name.get(name, ()))
+        if candidate_ids is not None:
+            matching_ids.intersection_update(candidate_ids)
+        matching_ids = {
+            candidate_id
+            for candidate_id in matching_ids
+            if comparable_node_types(node, self._nodes_by_id[candidate_id])
+        }
+        if not matching_ids:
+            return None
+        match_id = min(matching_ids, key=self._rank_by_id.__getitem__)
+        return self._nodes_by_id[match_id]
+
+    def same_type_candidates(
+        self,
+        node: Node,
+        candidate_ids: set[str] | None,
+    ) -> list[Node]:
+        node_type = normalize_type_name(node.type)
+        if node_type == UNCLASSIFIED_NODE_TYPE:
+            matching_ids = set(self._nodes_by_id)
+        else:
+            matching_ids = set(self._ids_by_type.get(node_type, ()))
+            matching_ids.update(
+                self._ids_by_type.get(UNCLASSIFIED_NODE_TYPE, ())
+            )
+        if candidate_ids is not None:
+            matching_ids.intersection_update(candidate_ids)
+        return [
+            self._nodes_by_id[candidate_id]
+            for candidate_id in sorted(
+                matching_ids,
+                key=self._rank_by_id.__getitem__,
+            )
+        ]
+
+    def _add_to_indexes(self, node: Node) -> None:
+        for name in _normalized_names(node):
+            self._ids_by_name.setdefault(name, set()).add(node.id)
+        node_type = normalize_type_name(node.type)
+        self._ids_by_type.setdefault(node_type, set()).add(node.id)
+
+    def _remove_from_indexes(self, node: Node) -> None:
+        for name in _normalized_names(node):
+            ids = self._ids_by_name[name]
+            ids.remove(node.id)
+            if not ids:
+                del self._ids_by_name[name]
+        node_type = normalize_type_name(node.type)
+        ids = self._ids_by_type[node_type]
+        ids.remove(node.id)
+        if not ids:
+            del self._ids_by_type[node_type]
 
 
 def judge_same_entity(

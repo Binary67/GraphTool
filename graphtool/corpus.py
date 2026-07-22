@@ -6,7 +6,11 @@ from pathlib import Path
 from graphtool.chunking.json_store import JsonChunkStore
 from graphtool.chunking.markdown import chunk_markdown
 from graphtool.chunking.types import Chunk
-from graphtool.graph.embedding_store import JsonEmbeddingStore, JsonGraphEmbeddingStore
+from graphtool.graph.embedding_store import (
+    JsonEmbeddingStore,
+    JsonGraphEmbeddingStore,
+    NodeEmbeddingRecord,
+)
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
@@ -175,10 +179,19 @@ def synchronize_documents(
         for chunk in chunk_store.load(source)
     ]
 
+    reusable_embedding_sources = (
+        sources_to_prepare
+        if knowledge_base_store.exists()
+        else sorted(current_sources)
+    )
     resolver = _make_semantic_resolver(
         llm,
         knowledge_base_embedding_store,
         min_candidate_similarity=min_candidate_similarity,
+        reusable_embedding_records=_load_document_embedding_records(
+            graph_embedding_store,
+            reusable_embedding_sources,
+        ),
     )
     if knowledge_base_store.exists():
         knowledge_base = knowledge_base_store.load()
@@ -259,6 +272,7 @@ def _make_semantic_resolver(
     *,
     source: str | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
+    reusable_embedding_records: Sequence[NodeEmbeddingRecord] = (),
 ) -> SemanticEntityResolver | None:
     if (
         not hasattr(llm, "embed_texts")
@@ -279,7 +293,22 @@ def _make_semantic_resolver(
         llm,
         embedding_store,
         min_candidate_similarity=min_candidate_similarity,
+        reusable_embedding_records=reusable_embedding_records,
     )
+
+
+def _load_document_embedding_records(
+    store: JsonGraphEmbeddingStore | None,
+    sources: Sequence[str],
+) -> list[NodeEmbeddingRecord]:
+    if store is None:
+        return []
+    return [
+        record
+        for source in sources
+        if store.exists(source)
+        for record in store.load(source).values()
+    ]
 
 
 class _SourceEmbeddingStore:

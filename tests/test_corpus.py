@@ -685,6 +685,39 @@ def test_synchronize_documents_updates_cached_knowledge_base_semantically(
     assert knowledge_base_embedding_store.exists() is True
 
 
+def test_synchronize_documents_reuses_document_embedding_for_knowledge_base(
+    tmp_path,
+):
+    graph_store = JsonGraphStore(tmp_path / "graphs")
+    chunk_store = JsonChunkStore(tmp_path / "chunks")
+    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    graph_embedding_store = JsonGraphEmbeddingStore(tmp_path / "graph_embeddings")
+    knowledge_base_embedding_store = JsonEmbeddingStore(
+        tmp_path / "knowledge_base_embeddings.json"
+    )
+    fake = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                nodes=[_ExtractedNode(ref="alpha", label="Alpha", type="concept")]
+            )
+        ],
+        decisions=[],
+        vectors={"Alpha": [1.0, 0.0]},
+    )
+
+    synchronize_documents(
+        {"docs/alpha.md": "# Alpha\nAlpha."},
+        graph_store,
+        chunk_store,
+        fake,
+        knowledge_base_store=knowledge_base_store,
+        graph_embedding_store=graph_embedding_store,
+        knowledge_base_embedding_store=knowledge_base_embedding_store,
+    )
+
+    assert fake.embedding_calls == ["label: Alpha\ntype: concept"]
+
+
 def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
     tmp_path,
 ):

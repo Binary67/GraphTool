@@ -1,9 +1,10 @@
 from collections.abc import Sequence
 
+from graphtool.graph.embedding_store import NodeEmbeddingRecord
 from graphtool.graph.entity_matching import (
+    EntityCandidateIndex,
     EntityResolutionDecision,
     accepted_target_id,
-    find_normalized_match,
     judge_same_entity,
 )
 from graphtool.graph.provenance import (
@@ -42,11 +43,13 @@ class SemanticEntityResolver:
         top_k: int = DEFAULT_TOP_K,
         merge_confidence_threshold: float = DEFAULT_MERGE_CONFIDENCE_THRESHOLD,
         min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
+        reusable_embedding_records: Sequence[NodeEmbeddingRecord] = (),
     ) -> None:
         self._llm = llm
         self._embeddings = ResolutionEmbeddings(
             embedding_client,
             embedding_store,
+            reusable_embedding_records,
         )
         self._top_k = top_k
         self._merge_confidence_threshold = merge_confidence_threshold
@@ -77,6 +80,7 @@ class SemanticEntityResolver:
 
         canonical_nodes: list[Node] = []
         canonical_by_id: dict[str, Node] = {}
+        candidate_index = EntityCandidateIndex()
         node_id_map: dict[str, str] = {}
 
         if existing is not None:
@@ -84,6 +88,7 @@ class SemanticEntityResolver:
                 canonical = canonicalize_node(node)
                 canonical_nodes.append(canonical)
                 canonical_by_id[canonical.id] = canonical
+                candidate_index.add(canonical)
                 node_id_map[node.id] = canonical.id
             existing_edges = [
                 remap_edge(edge, node_id_map) for edge in existing.edges
@@ -94,20 +99,12 @@ class SemanticEntityResolver:
         for graph in graphs:
             candidate_ids = None if resolve_within_graph else set(canonical_by_id)
             for node in graph.nodes:
-                candidates = (
-                    canonical_nodes
-                    if candidate_ids is None
-                    else [
-                        candidate
-                        for candidate in canonical_nodes
-                        if candidate.id in candidate_ids
-                    ]
-                )
                 node_id_map[node.id] = self._resolve_node(
                     node,
                     canonical_nodes,
                     canonical_by_id,
-                    candidates,
+                    candidate_index,
+                    candidate_ids,
                     graph.metadata,
                 )
 
@@ -124,7 +121,8 @@ class SemanticEntityResolver:
         node: Node,
         canonical_nodes: list[Node],
         canonical_by_id: dict[str, Node],
-        candidates: Sequence[Node],
+        candidate_index: EntityCandidateIndex,
+        candidate_ids: set[str] | None,
         metadata: GraphMetadata | None,
     ) -> str:
         existing = canonical_by_id.get(node.id)
@@ -138,21 +136,27 @@ class SemanticEntityResolver:
                 node,
                 canonical_nodes,
                 canonical_by_id,
+                candidate_index,
                 metadata=metadata,
             )
             return existing.id
 
-        normalized_match = find_normalized_match(node, candidates)
+        normalized_match = candidate_index.find_normalized_match(
+            node,
+            candidate_ids,
+        )
         if normalized_match is not None:
             self._merge_into(
                 normalized_match,
                 node,
                 canonical_nodes,
                 canonical_by_id,
+                candidate_index,
                 metadata=metadata,
             )
             return normalized_match.id
 
+        candidates = candidate_index.same_type_candidates(node, candidate_ids)
         embedding_candidates = self._embeddings.candidates(
             node,
             candidates,
@@ -177,6 +181,7 @@ class SemanticEntityResolver:
                     node,
                     canonical_nodes,
                     canonical_by_id,
+                    candidate_index,
                     metadata=metadata,
                     aliases_to_add=decision.aliases_to_add,
                 )
@@ -189,6 +194,7 @@ class SemanticEntityResolver:
             )
         canonical_nodes.append(canonical)
         canonical_by_id[canonical.id] = canonical
+        candidate_index.add(canonical)
         return canonical.id
 
     def _merge_into(
@@ -197,6 +203,7 @@ class SemanticEntityResolver:
         incoming: Node,
         canonical_nodes: list[Node],
         canonical_by_id: dict[str, Node],
+        candidate_index: EntityCandidateIndex,
         metadata: GraphMetadata | None,
         aliases_to_add: Sequence[str] = (),
     ) -> None:
@@ -212,4 +219,5 @@ class SemanticEntityResolver:
         index = canonical_nodes.index(existing)
         canonical_nodes[index] = merged
         canonical_by_id[merged.id] = merged
+        candidate_index.replace(merged)
         self._embeddings.invalidate(merged.id)
