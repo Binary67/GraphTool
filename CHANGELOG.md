@@ -17,6 +17,8 @@
 - Added framework-neutral knowledge-base search with source reporting and
   structured retrieval results.
 - Added centralized runtime, path, client, and store construction.
+- Added a read-only knowledge agent with model-bound knowledge search and
+  authorized adjacent-chunk retrieval tools.
 
 ### Changed
 
@@ -40,8 +42,6 @@
 
 ### Removed
 
-- Removed the built-in LangGraph question-answering agent and LangChain tool
-  adapters; applications can wrap the framework-neutral retrieval APIs.
 - Removed the single-text `EmbeddingClient.embed_text` API in favor of batched
   `embed_texts` calls.
 - Removed unused model metadata from taxonomy suggestion records. Existing

@@ -4,6 +4,7 @@ from langchain_core.messages import (
     HumanMessage,
     RemoveMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.messages.utils import (
     count_tokens_approximately,
@@ -11,27 +12,31 @@ from langchain_core.messages.utils import (
 )
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel
 
 from graphtool.agents.knowledge.prompts import (
     ANSWER_SYSTEM_PROMPT,
     EVALUATOR_SYSTEM_PROMPT,
     NO_EVIDENCE_ANSWER_SYSTEM_PROMPT,
-    REFINE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
 )
 from graphtool.agents.knowledge.state import (
     AgentResponse,
+    AgentChunkReference,
     AgentState,
     ConversationSummary,
     EvidenceRecord,
     FinalAnswerDraft,
-    ResearchDecision,
-    ResearchQuery,
     SufficiencyDecision,
 )
-from graphtool.agents.knowledge.tools import search_knowledge_base
+from graphtool.agents.knowledge.tools import (
+    ChunkNeighborhoodArtifact,
+    KnowledgeSearchArtifact,
+    ToolErrorArtifact,
+    create_knowledge_tools,
+)
 from graphtool.agents.knowledge.workflow_context import (
     answer_text,
     conversation_token_count,
@@ -43,7 +48,7 @@ from graphtool.agents.knowledge.workflow_context import (
 )
 from graphtool.runtime import GraphToolRuntime
 
-MAX_SEARCHES_PER_TURN = 5
+MAX_RETRIEVALS_PER_TURN = 5
 NO_EVIDENCE_DISCLOSURE = (
     "I couldn't find supporting information in the knowledge base. The following "
     "is a best-effort answer based on general knowledge and is not verified "
@@ -59,9 +64,14 @@ def build_workflow_graph(
     compact_trigger_tokens: int,
     compact_recent_tokens: int,
 ):
+    tools = create_knowledge_tools(runtime)
     summary_model = model.with_structured_output(ConversationSummary)
-    research_model = model.with_structured_output(ResearchDecision)
-    refine_model = model.with_structured_output(ResearchQuery)
+    research_model = model.bind_tools(tools, parallel_tool_calls=False)
+    required_research_model = model.bind_tools(
+        tools,
+        tool_choice="required",
+        parallel_tool_calls=False,
+    )
     evaluator_model = model.with_structured_output(SufficiencyDecision)
     answer_model = model.with_structured_output(FinalAnswerDraft)
 
@@ -109,54 +119,112 @@ def build_workflow_graph(
         }
 
     def research(state: AgentState) -> dict:
-        decision = _validated_output(
-            ResearchDecision,
-            research_model.invoke(
-                [
-                    SystemMessage(content=RESEARCH_SYSTEM_PROMPT),
-                    HumanMessage(content=research_context(state)),
-                    *state["messages"],
-                ]
-            ),
+        active_model = (
+            required_research_model
+            if state.get("evaluation") is not None
+            and state["evaluation"].verdict == "insufficient"
+            else research_model
         )
+        response = active_model.invoke(
+            [
+                SystemMessage(content=RESEARCH_SYSTEM_PROMPT),
+                HumanMessage(content=research_context(state)),
+                *state["messages"],
+            ]
+        )
+        if not isinstance(response, AIMessage):
+            raise TypeError("Tool-bound research model must return an AIMessage.")
+        if response.tool_calls:
+            return {
+                "messages": [response],
+                "research_action": "tools",
+                "direct_response": None,
+                "evaluation": None,
+            }
         return {
-            "research_action": decision.action,
-            "proposed_query": (
-                decision.query.strip() if decision.query is not None else None
-            ),
-            "direct_response": (
-                decision.response.strip() if decision.response is not None else None
-            ),
+            "research_action": "respond",
+            "direct_response": _message_text(response).strip(),
         }
 
-    def refine(state: AgentState) -> dict:
-        query = _validated_output(
-            ResearchQuery,
-            refine_model.invoke(
-                [
-                    SystemMessage(content=REFINE_SYSTEM_PROMPT),
-                    HumanMessage(content=research_context(state)),
-                ]
-            ),
-        )
-        return {"proposed_query": query.query.strip(), "direct_response": None}
+    def record_tool_results(state: AgentState) -> dict:
+        evidence = list(state["evidence"])
+        references = list(state["references"])
+        allowed_chunks = list(state["allowed_chunks"])
+        used_neighborhoods = list(state["used_neighborhoods"])
+        search_count = state["search_count"]
+        retrieval_count = state["retrieval_count"]
+        tool_messages = _trailing_tool_messages(state["messages"])
 
-    def search(state: AgentState) -> dict:
-        result = search_knowledge_base(runtime, state["proposed_query"] or "")
-        references, reference_ids = merge_references(
-            state["references"],
-            result.references,
+        for message in tool_messages:
+            artifact = _tool_artifact(message)
+            retrieval_count += 1
+            if isinstance(artifact, KnowledgeSearchArtifact):
+                references, reference_ids = merge_references(
+                    references,
+                    artifact.references,
+                )
+                evidence.append(
+                    EvidenceRecord(
+                        query=artifact.query,
+                        context_text=artifact.context_text,
+                        reference_ids=reference_ids,
+                    )
+                )
+                allowed_chunks = _merge_allowed_chunks(
+                    allowed_chunks,
+                    artifact.chunks,
+                )
+                search_count += 1
+            elif isinstance(artifact, ChunkNeighborhoodArtifact):
+                references, reference_ids = merge_references(
+                    references,
+                    artifact.references,
+                )
+                evidence.append(
+                    EvidenceRecord(
+                        query=(
+                            "Chunk neighborhood: "
+                            f"{artifact.source} :: {artifact.chunk_id}"
+                        ),
+                        context_text=artifact.context_text,
+                        reference_ids=reference_ids,
+                    )
+                )
+                key = _chunk_key(artifact.source, artifact.chunk_id)
+                if key not in used_neighborhoods:
+                    used_neighborhoods.append(key)
+            else:
+                error = (
+                    artifact.message
+                    if isinstance(artifact, ToolErrorArtifact)
+                    else str(message.content)
+                )
+                evidence.append(
+                    EvidenceRecord(
+                        query=f"Tool error: {message.name or 'unknown'}",
+                        context_text=error,
+                    )
+                )
+                if message.name == "search_knowledge_base":
+                    search_count += 1
+
+        tool_message_ids = list(state["tool_message_ids"])
+        exchange_messages = _tool_exchange_messages(
+            state["messages"],
+            tool_messages,
         )
-        evidence = EvidenceRecord(
-            query=result.query,
-            context_text=result.context_text,
-            reference_ids=reference_ids,
-        )
+        for message in exchange_messages:
+            if message.id is not None and message.id not in tool_message_ids:
+                tool_message_ids.append(message.id)
         return {
-            "evidence": [*state["evidence"], evidence],
+            "evidence": evidence,
             "references": references,
-            "search_count": state["search_count"] + 1,
-            "proposed_query": None,
+            "allowed_chunks": allowed_chunks,
+            "used_neighborhoods": used_neighborhoods,
+            "search_count": search_count,
+            "retrieval_count": retrieval_count,
+            "tool_message_ids": tool_message_ids,
+            "research_action": None,
         }
 
     def evaluate(state: AgentState) -> dict:
@@ -287,12 +355,19 @@ def build_workflow_graph(
 
     def cleanup(state: AgentState) -> dict:
         return {
+            "messages": [
+                RemoveMessage(id=message_id)
+                for message_id in state["tool_message_ids"]
+            ],
             "question": "",
             "evidence": [],
             "references": [],
             "search_count": 0,
+            "retrieval_count": 0,
+            "allowed_chunks": [],
+            "used_neighborhoods": [],
+            "tool_message_ids": [],
             "research_action": None,
-            "proposed_query": None,
             "direct_response": None,
             "evaluation": None,
         }
@@ -300,8 +375,8 @@ def build_workflow_graph(
     builder = StateGraph(AgentState)
     builder.add_node("compact", compact)
     builder.add_node("research", research)
-    builder.add_node("refine", refine)
-    builder.add_node("search", search)
+    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("record_tool_results", record_tool_results)
     builder.add_node("evaluate", evaluate)
     builder.add_node("answer", answer)
     builder.add_node("finish_conversation", finish_conversation)
@@ -311,19 +386,19 @@ def build_workflow_graph(
     builder.add_conditional_edges(
         "research",
         _route_research,
-        {"search": "search", "evaluate": "evaluate"},
+        {"tools": "tools", "evaluate": "evaluate"},
     )
-    builder.add_edge("search", "evaluate")
+    builder.add_edge("tools", "record_tool_results")
+    builder.add_edge("record_tool_results", "evaluate")
     builder.add_conditional_edges(
         "evaluate",
         _route_evaluation,
         {
             "answer": "answer",
             "finish_conversation": "finish_conversation",
-            "refine": "refine",
+            "research": "research",
         },
     )
-    builder.add_edge("refine", "search")
     builder.add_edge("answer", "cleanup")
     builder.add_edge("finish_conversation", "cleanup")
     builder.add_edge("cleanup", END)
@@ -331,8 +406,8 @@ def build_workflow_graph(
 
 
 def _route_research(state: AgentState) -> str:
-    if state.get("research_action") == "search":
-        return "search"
+    if state.get("research_action") == "tools":
+        return "tools"
     if state.get("research_action") == "respond":
         return "evaluate"
     raise RuntimeError("Research action is missing.")
@@ -346,13 +421,77 @@ def _route_evaluation(state: AgentState) -> str:
         return "finish_conversation"
     if (
         evaluation.verdict == "sufficient"
-        or state["search_count"] >= MAX_SEARCHES_PER_TURN
+        or state["retrieval_count"] >= MAX_RETRIEVALS_PER_TURN
     ):
         return "answer"
-    return "refine"
+    return "research"
 
 
 def _validated_output(model_type: type[BaseModel], value):
     if isinstance(value, model_type):
         return value
     return model_type.model_validate(value)
+
+
+def _message_text(message: AIMessage) -> str:
+    if isinstance(message.content, str):
+        return message.content
+    return str(message.content)
+
+
+def _trailing_tool_messages(messages) -> list[ToolMessage]:
+    trailing = []
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage):
+            break
+        trailing.append(message)
+    return list(reversed(trailing))
+
+
+def _tool_exchange_messages(messages, tool_messages: list[ToolMessage]):
+    if not tool_messages:
+        return []
+    first_tool_index = len(messages) - len(tool_messages)
+    preceding = messages[first_tool_index - 1] if first_tool_index > 0 else None
+    if isinstance(preceding, AIMessage) and preceding.tool_calls:
+        return [preceding, *tool_messages]
+    return tool_messages
+
+
+def _tool_artifact(
+    message: ToolMessage,
+) -> KnowledgeSearchArtifact | ChunkNeighborhoodArtifact | ToolErrorArtifact | None:
+    artifact = message.artifact
+    if isinstance(
+        artifact,
+        (KnowledgeSearchArtifact, ChunkNeighborhoodArtifact, ToolErrorArtifact),
+    ):
+        return artifact
+    if not isinstance(artifact, dict):
+        return None
+    artifact_type = artifact.get("type")
+    if artifact_type == "search":
+        return KnowledgeSearchArtifact.model_validate(artifact)
+    if artifact_type == "chunk_neighborhood":
+        return ChunkNeighborhoodArtifact.model_validate(artifact)
+    if artifact_type == "error":
+        return ToolErrorArtifact.model_validate(artifact)
+    return None
+
+
+def _merge_allowed_chunks(
+    existing: list[AgentChunkReference],
+    incoming: list[AgentChunkReference],
+) -> list[AgentChunkReference]:
+    merged = list(existing)
+    keys = {_chunk_key(item.source, item.chunk_id) for item in existing}
+    for item in incoming:
+        key = _chunk_key(item.source, item.chunk_id)
+        if key not in keys:
+            merged.append(item)
+            keys.add(key)
+    return merged
+
+
+def _chunk_key(source: str, chunk_id: str) -> str:
+    return f"{source} :: {chunk_id}"

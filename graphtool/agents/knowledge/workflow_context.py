@@ -17,11 +17,16 @@ def research_context(state: AgentState) -> str:
         if state.get("evaluation") is not None
         else ""
     )
+    available_chunks = [
+        f"{item.source} :: {item.chunk_id}" for item in state["allowed_chunks"]
+    ]
     return (
         "Conversation summary (context only, not evidence):\n"
         f"{state.get('conversation_summary') or '[None]'}\n\n"
         f"Original question: {state['question']}\n"
         f"Prior search queries: {prior_queries or ['None']}\n"
+        f"Available chunks: {available_chunks or ['None']}\n"
+        f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
         f"Unresolved information: {missing_information or '[Not evaluated yet]'}"
     )
 
@@ -125,7 +130,10 @@ def _conversation_context_text(state: AgentState) -> str:
 
 def _conversation_text(messages: Sequence[AnyMessage]) -> str:
     return "\n".join(
-        f"{message.type}: {_message_text(message)}" for message in messages
+        f"{message.type}: {_message_text(message)}"
+        for message in messages
+        if message.type != "tool"
+        and not (message.type == "ai" and getattr(message, "tool_calls", []))
     )
 
 

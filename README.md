@@ -110,9 +110,14 @@ Calls using the same thread ID share conversation history while the process is
 running. By default, older history is summarized when the conversation reaches
 approximately 32,000 tokens, while the most recent 8,000 tokens remain verbatim.
 These limits can be changed with `compact_trigger_tokens` and
-`compact_recent_tokens` when creating the agent. The agent searches the local
-knowledge base up to five times per question and returns `status="partial"` when
-the available evidence remains incomplete.
+`compact_recent_tokens` when creating the agent.
+
+The agent binds two read-only tools: `search_knowledge_base` searches document
+chunks and knowledge-graph paths, while `get_chunk_neighborhood` retrieves the
+previous, current, and next chunks around a search result when adjacent context is
+needed. Neighborhood lookup accepts only chunks returned by an earlier search in
+the same turn. The agent makes up to five retrieval tool calls per question and
+returns `status="partial"` when the available evidence remains incomplete.
 
 ## Telegram bot
 

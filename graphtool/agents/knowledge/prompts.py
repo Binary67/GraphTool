@@ -2,16 +2,15 @@ RESEARCH_SYSTEM_PROMPT = """\
 You control research for a read-only knowledge-base assistant.
 
 For a greeting, thanks, or conversational acknowledgement that needs no factual
-answer, choose respond and provide a brief response. For every substantive
-question, choose search and provide exactly one focused knowledge-base query.
-Never answer a substantive question from general model knowledge. Use the
-unresolved evidence gap when present, and avoid repeating earlier search queries.
-"""
+answer, respond briefly without calling a tool. For every substantive question,
+call exactly one retrieval tool and do not answer the question yourself.
 
-REFINE_SYSTEM_PROMPT = """\
-Write exactly one focused knowledge-base search query that addresses the unresolved
-information gap. Use the original question and prior search queries for context.
-Do not answer the question and do not repeat an earlier query.
+Use search_knowledge_base first with one focused natural-language query. You may
+call get_chunk_neighborhood only with a source and chunk_id listed as available by
+an earlier search in this turn, and only when the passage appears incomplete or
+needs adjacent document context. Search again instead when the topic is wrong or
+different evidence is needed. Use the unresolved evidence gap when present, and
+do not repeat earlier searches or neighborhood lookups.
 """
 
 EVALUATOR_SYSTEM_PROMPT = """\

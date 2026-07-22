@@ -1,17 +1,23 @@
 from collections import defaultdict
+from itertools import count
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from graphtool.agents.knowledge import create_knowledge_agent
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
     FinalAnswerDraft,
-    ResearchDecision,
-    ResearchQuery,
     SufficiencyDecision,
 )
+from graphtool.chunking.types import Chunk
 from graphtool.retrieval import RetrievalResult, SourceReference
+from graphtool.retrieval.types import ChunkHit
+
+
+class ToolModelResponse:
+    pass
 
 
 class ScriptedRunnable:
@@ -33,10 +39,22 @@ class ScriptedModel:
             schema: list(values) for schema, values in responses.items()
         }
         self.calls = defaultdict(list)
+        self.bound_tools = []
+        self.bound_tool_names = []
 
     def with_structured_output(self, schema):
         self.responses.setdefault(schema, [])
         return ScriptedRunnable(schema, self.responses, self.calls)
+
+    def bind_tools(self, tools, **kwargs):
+        self.bound_tools = list(tools)
+        self.bound_tool_names = [item.name for item in tools]
+        self.responses.setdefault(ToolModelResponse, [])
+        return ScriptedRunnable(
+            ToolModelResponse,
+            self.responses,
+            self.calls,
+        )
 
 
 class ExistingKnowledgeBaseStore:
@@ -50,7 +68,7 @@ class MissingKnowledgeBaseStore:
 
 
 class FakeRuntime:
-    def __init__(self, results, *, knowledge_base_exists=True):
+    def __init__(self, results, *, neighborhoods=None, knowledge_base_exists=True):
         self.knowledge_base_store = (
             ExistingKnowledgeBaseStore()
             if knowledge_base_exists
@@ -58,6 +76,7 @@ class FakeRuntime:
         )
         self.results = list(results)
         self.search_calls = []
+        self.chunk_store = FakeChunkStore(neighborhoods or {})
 
     def search(self, query):
         self.search_calls.append(query)
@@ -66,14 +85,30 @@ class FakeRuntime:
         return self.results.pop(0)
 
 
-def _result(query, source="docs/guide.md", page=1, context="Evidence text."):
+class FakeChunkStore:
+    def __init__(self, neighborhoods):
+        self.neighborhoods = neighborhoods
+        self.calls = []
+
+    def load_neighborhood(self, source, chunk_id):
+        self.calls.append((source, chunk_id))
+        return self.neighborhoods[(source, chunk_id)]
+
+
+def _result(
+    query,
+    source="docs/guide.md",
+    page=1,
+    context="Evidence text.",
+    chunks=None,
+):
     return RetrievalResult(
         query=query,
         sources=[source],
         references=[
             SourceReference(source=source, page_start=page, page_end=page)
         ],
-        chunks=[],
+        chunks=chunks or [],
         context_text=context,
     )
 
@@ -88,36 +123,64 @@ def _empty_result(query):
     )
 
 
-def test_research_decision_rejects_response_for_search_action():
-    with pytest.raises(
-        ValueError,
-        match="response must be omitted when action is search",
-    ):
-        ResearchDecision(
-            action="search",
-            query="GraphTool capabilities",
-            response="GraphTool builds a knowledge graph.",
-        )
+_tool_call_ids = count(1)
 
 
-def test_research_decision_rejects_query_for_respond_action():
-    with pytest.raises(
-        ValueError,
-        match="query must be omitted when action is respond",
-    ):
-        ResearchDecision(
-            action="respond",
-            query="GraphTool capabilities",
-            response="Hello!",
-        )
+def _tool_call(name, **arguments):
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": name,
+                "args": arguments,
+                "id": f"tool-call-{next(_tool_call_ids)}",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def _search_call(query):
+    return _tool_call("search_knowledge_base", query=query)
+
+
+def _neighborhood_call(source, chunk_id):
+    return _tool_call(
+        "get_chunk_neighborhood",
+        source=source,
+        chunk_id=chunk_id,
+    )
+
+
+def _direct_response(text):
+    return AIMessage(content=text)
+
+
+def _chunk(chunk_id, index, page, text):
+    return Chunk(
+        id=chunk_id,
+        source="docs/guide.md",
+        index=index,
+        text=text,
+        heading_path=["Guide"],
+        page_start=page,
+        page_end=page,
+    )
+
+
+def _chunk_hit(chunk):
+    return ChunkHit(
+        chunk=chunk,
+        score=1.0,
+        linked_nodes=[],
+        linked_relationships=[],
+    )
 
 
 def test_agent_retries_answer_with_same_evidence_for_unknown_citation():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="GraphTool capabilities")
-            ],
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="sufficient")
             ],
@@ -159,9 +222,7 @@ def test_agent_retries_answer_with_same_evidence_for_unknown_citation():
 def test_agent_does_not_retry_answer_when_all_citations_are_valid():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="GraphTool capabilities")
-            ],
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
             SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -191,9 +252,7 @@ def test_agent_does_not_retry_answer_when_all_citations_are_valid():
 def test_agent_fails_after_retry_repeats_unknown_citation():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="GraphTool capabilities")
-            ],
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
             SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -223,10 +282,10 @@ def test_agent_fails_after_retry_repeats_unknown_citation():
 def test_agent_reformulates_search_after_insufficient_evidence():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="Azure OpenAI usage")
+            ToolModelResponse: [
+                _search_call("Azure OpenAI usage"),
+                _search_call("Azure OpenAI decision rationale"),
             ],
-            ResearchQuery: [ResearchQuery(query="Azure OpenAI decision rationale")],
             SufficiencyDecision: [
                 SufficiencyDecision(
                     verdict="insufficient",
@@ -261,12 +320,109 @@ def test_agent_reformulates_search_after_insufficient_evidence():
     assert response.references[0].page_start == 2
 
 
+def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
+    previous = _chunk("guide-0000", 0, 1, "The procedure begins here.")
+    current = _chunk("guide-0001", 1, 2, "The matching search passage.")
+    next_chunk = _chunk("guide-0002", 2, 3, "The procedure ends here.")
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("deployment procedure"),
+                _neighborhood_call("docs/guide.md", "guide-0001"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The surrounding procedure is missing.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The procedure spans all three pages.",
+                    cited_reference_ids=["S2", "S1", "S3"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result(
+                "deployment procedure",
+                page=2,
+                chunks=[_chunk_hit(current)],
+            )
+        ],
+        neighborhoods={
+            ("docs/guide.md", "guide-0001"): (previous, current, next_chunk)
+        },
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask(
+        "What is the complete deployment procedure?",
+        thread_id="thread-1",
+    )
+
+    assert model.bound_tool_names == [
+        "search_knowledge_base",
+        "get_chunk_neighborhood",
+    ]
+    schemas = {
+        item.name: item.tool_call_schema.model_json_schema()
+        for item in model.bound_tools
+    }
+    assert set(schemas["search_knowledge_base"]["properties"]) == {"query"}
+    assert set(schemas["get_chunk_neighborhood"]["properties"]) == {
+        "source",
+        "chunk_id",
+    }
+    assert runtime.chunk_store.calls == [("docs/guide.md", "guide-0001")]
+    assert response.search_count == 1
+    assert response.references == [
+        SourceReference(source="docs/guide.md", page_start=1, page_end=1),
+        SourceReference(source="docs/guide.md", page_start=2, page_end=2),
+        SourceReference(source="docs/guide.md", page_start=3, page_end=3),
+    ]
+
+
+def test_agent_rejects_neighborhood_that_was_not_returned_by_search():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _neighborhood_call("docs/guide.md", "unknown-chunk"),
+                _search_call("GraphTool provider"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="No authorized evidence was retrieved.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="GraphTool uses Azure OpenAI.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("GraphTool provider")])
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("Which provider is used?", thread_id="thread-1")
+
+    assert runtime.chunk_store.calls == []
+    assert runtime.search_calls == ["GraphTool provider"]
+    assert response.search_count == 1
+
+
 def test_agent_stops_after_five_searches_and_returns_partial_answer():
     model = ScriptedModel(
         {
-            ResearchDecision: [ResearchDecision(action="search", query="query 1")],
-            ResearchQuery: [
-                ResearchQuery(query=f"query {index}") for index in range(2, 6)
+            ToolModelResponse: [
+                _search_call(f"query {index}") for index in range(1, 6)
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(
@@ -301,9 +457,8 @@ def test_agent_stops_after_five_searches_and_returns_partial_answer():
 def test_agent_discloses_best_effort_answer_after_five_empty_searches():
     model = ScriptedModel(
         {
-            ResearchDecision: [ResearchDecision(action="search", query="query 1")],
-            ResearchQuery: [
-                ResearchQuery(query=f"query {index}") for index in range(2, 6)
+            ToolModelResponse: [
+                _search_call(f"query {index}") for index in range(1, 6)
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="sufficient") for _ in range(5)
@@ -340,10 +495,10 @@ def test_agent_discloses_best_effort_answer_after_five_empty_searches():
 def test_evaluator_prevents_substantive_response_without_evidence():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="respond", response="It uses Azure.")
+            ToolModelResponse: [
+                _direct_response("It uses Azure."),
+                _search_call("GraphTool provider"),
             ],
-            ResearchQuery: [ResearchQuery(query="GraphTool provider")],
             SufficiencyDecision: [
                 SufficiencyDecision(
                     verdict="insufficient",
@@ -372,8 +527,8 @@ def test_evaluator_prevents_substantive_response_without_evidence():
 def test_agent_allows_evaluator_approved_conversation_without_search():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="respond", response="Hello! How can I help?")
+            ToolModelResponse: [
+                _direct_response("Hello! How can I help?")
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="conversation")
@@ -395,10 +550,10 @@ def test_agent_allows_evaluator_approved_conversation_without_search():
 def test_in_memory_threads_retain_only_their_own_conversation(caplog):
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="respond", response="First answer"),
-                ResearchDecision(action="respond", response="Follow-up answer"),
-                ResearchDecision(action="respond", response="Separate answer"),
+            ToolModelResponse: [
+                _direct_response("First answer"),
+                _direct_response("Follow-up answer"),
+                _direct_response("Separate answer"),
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="conversation") for _ in range(3)
@@ -415,7 +570,7 @@ def test_in_memory_threads_retain_only_their_own_conversation(caplog):
     assert first.search_count == 0
     assert follow_up.search_count == 0
     assert separate.search_count == 0
-    research_calls = model.calls[ResearchDecision]
+    research_calls = model.calls[ToolModelResponse]
     follow_up_text = "\n".join(str(message.content) for message in research_calls[1])
     separate_text = "\n".join(str(message.content) for message in research_calls[2])
     assert "First answer" in follow_up_text
@@ -429,9 +584,9 @@ def test_in_memory_threads_retain_only_their_own_conversation(caplog):
 def test_search_budget_resets_for_each_turn_in_the_same_thread():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="first query"),
-                ResearchDecision(action="search", query="follow-up query"),
+            ToolModelResponse: [
+                _search_call("first query"),
+                _search_call("follow-up query"),
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="sufficient") for _ in range(2)
@@ -468,10 +623,10 @@ def test_agent_incrementally_compacts_old_conversation_messages():
                 ConversationSummary(summary="Apollo summary version one."),
                 ConversationSummary(summary="Apollo summary version two."),
             ],
-            ResearchDecision: [
-                ResearchDecision(action="respond", response="First answer"),
-                ResearchDecision(action="respond", response="Second answer"),
-                ResearchDecision(action="respond", response="Third answer"),
+            ToolModelResponse: [
+                _direct_response("First answer"),
+                _direct_response("Second answer"),
+                _direct_response("Third answer"),
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="conversation") for _ in range(3)
@@ -502,7 +657,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     assert second_question.strip() in second_summary_input
     assert "Second answer" in second_summary_input
 
-    research_calls = model.calls[ResearchDecision]
+    research_calls = model.calls[ToolModelResponse]
     second_research_text = "\n".join(
         str(message.content) for message in research_calls[1]
     )
@@ -518,9 +673,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
 def test_completed_turn_keeps_one_clean_checkpoint():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="search", query="GraphTool capabilities")
-            ],
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
             SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -555,9 +708,7 @@ def test_completed_turn_keeps_one_clean_checkpoint():
 def test_reset_deletes_conversation_checkpoint():
     model = ScriptedModel(
         {
-            ResearchDecision: [
-                ResearchDecision(action="respond", response="First answer")
-            ],
+            ToolModelResponse: [_direct_response("First answer")],
             SufficiencyDecision: [SufficiencyDecision(verdict="conversation")],
         }
     )
