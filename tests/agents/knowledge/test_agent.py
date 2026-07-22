@@ -392,7 +392,7 @@ def test_agent_allows_evaluator_approved_conversation_without_search():
     assert runtime.search_calls == []
 
 
-def test_in_memory_threads_retain_only_their_own_conversation():
+def test_in_memory_threads_retain_only_their_own_conversation(caplog):
     model = ScriptedModel(
         {
             ResearchDecision: [
@@ -420,6 +420,10 @@ def test_in_memory_threads_retain_only_their_own_conversation():
     separate_text = "\n".join(str(message.content) for message in research_calls[2])
     assert "First answer" in follow_up_text
     assert "First answer" not in separate_text
+    assert not any(
+        "Deserializing unregistered type" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_search_budget_resets_for_each_turn_in_the_same_thread():
@@ -541,7 +545,7 @@ def test_completed_turn_keeps_one_clean_checkpoint():
     assert state["search_count"] == 0
     assert state["research_action"] is None
     assert state["evaluation"] is None
-    assert state["response"] == response
+    assert state["response"] is None
     assert [message.content for message in state["messages"]] == [
         "What does GraphTool do?",
         "GraphTool builds a knowledge graph.",

@@ -73,7 +73,8 @@ class KnowledgeAgent:
         if not isinstance(response, AgentResponse):
             raise RuntimeError("Knowledge agent completed without a response.")
         self._checkpointer.delete_thread(normalized_thread_id)
-        self._graph.update_state(config, result, as_node="cleanup")
+        checkpoint_state = {**result, "response": None}
+        self._graph.update_state(config, checkpoint_state, as_node="cleanup")
         return response
 
     def reset(self, thread_id: str) -> None:
