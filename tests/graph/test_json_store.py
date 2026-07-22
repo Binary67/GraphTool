@@ -202,9 +202,9 @@ def test_load_all_returns_saved_graphs_in_filename_order(tmp_path):
 
     loaded = store.load_all()
 
-    assert sorted(graph.metadata.source for graph in loaded if graph.metadata) == [
-        "docs/api/guide.md",
+    assert [graph.metadata.source for graph in loaded if graph.metadata] == [
         "docs/user/guide.md",
+        "docs/api/guide.md",
     ]
 
 

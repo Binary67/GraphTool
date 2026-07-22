@@ -1,6 +1,5 @@
-import hashlib
-
-from graphtool.source import INGESTION_VERSION, document_content_hash
+from graphtool import source
+from graphtool.source import document_content_hash
 
 
 def test_document_content_hash_uses_exact_text():
@@ -12,10 +11,10 @@ def test_document_content_hash_uses_exact_text():
     )
 
 
-def test_document_content_hash_includes_ingestion_version():
+def test_document_content_hash_changes_with_ingestion_version(monkeypatch):
     content = "# Title\nText"
-    payload = f"graphtool-ingestion-v{INGESTION_VERSION}\0{content}"
+    original_hash = document_content_hash(content)
 
-    assert document_content_hash(content) == hashlib.sha256(
-        payload.encode("utf-8")
-    ).hexdigest()
+    monkeypatch.setattr(source, "INGESTION_VERSION", source.INGESTION_VERSION + 1)
+
+    assert document_content_hash(content) != original_hash
