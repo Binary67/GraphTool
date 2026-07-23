@@ -11,7 +11,6 @@ from graphtool.retrieval import SourceReference, format_source_reference
 
 
 def research_context(state: AgentState) -> str:
-    prior_queries = [record.query for record in state["evidence"]]
     missing_information = (
         state["evaluation"].missing_information
         if state.get("evaluation") is not None
@@ -25,7 +24,7 @@ def research_context(state: AgentState) -> str:
         f"{state.get('conversation_summary') or '[None]'}\n\n"
         f"Original question: {state['question']}\n"
         f"Current subquestion: {_current_question(state)}\n"
-        f"Prior search queries: {prior_queries or ['None']}\n"
+        f"Prior retrieval queries: {state['retrieval_queries'] or ['None']}\n"
         f"Available chunks: {available_chunks or ['None']}\n"
         f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
         f"Unresolved information: {missing_information or '[Not evaluated yet]'}"
@@ -39,7 +38,8 @@ def evaluation_text(state: AgentState) -> str:
         f"Conversation:\n{_conversation_context_text(state)}\n\n"
         "Proposed conversational response:\n"
         f"{state.get('direct_response') or '[None]'}\n\n"
-        f"Retrieved evidence:\n{_evidence_text(state)}"
+        "Retrieved evidence:\n"
+        f"{_evidence_text(state, subquestion_index=state['subquestion_index'])}"
     )
 
 
@@ -117,12 +117,28 @@ def unique_ordered(values: Sequence[str]) -> list[str]:
     return unique
 
 
-def _evidence_text(state: AgentState) -> str:
-    if not state["evidence"]:
+def _evidence_text(
+    state: AgentState,
+    *,
+    subquestion_index: int | None = None,
+) -> str:
+    evidence = [
+        record
+        for record in state["evidence"]
+        if subquestion_index is None
+        or subquestion_index in record.subquestion_indexes
+    ]
+    if not evidence:
         return "[None]"
+    used_reference_ids = {
+        reference_id
+        for record in evidence
+        for reference_id in record.reference_ids
+    }
     references = "\n".join(
         f"[{item.id}] {_format_reference(item.reference)}"
         for item in state["references"]
+        if item.id in used_reference_ids
     )
     searches = "\n\n".join(
         (
@@ -130,7 +146,7 @@ def _evidence_text(state: AgentState) -> str:
             f"Available reference IDs: {record.reference_ids or ['None']}\n"
             f"{record.context_text}"
         )
-        for record in state["evidence"]
+        for record in evidence
     )
     return f"Reference registry:\n{references or '[None]'}\n\n{searches}"
 

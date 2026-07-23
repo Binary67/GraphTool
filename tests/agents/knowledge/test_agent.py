@@ -116,13 +116,24 @@ def _result(
     context="Evidence text.",
     chunks=None,
 ):
+    if chunks is None:
+        chunk = Chunk(
+            id=f"guide-{page:04d}",
+            source=source,
+            index=page - 1,
+            text=context,
+            heading_path=["Guide"],
+            page_start=page,
+            page_end=page,
+        )
+        chunks = [_chunk_hit(chunk)]
     return RetrievalResult(
         query=query,
         sources=[source],
         references=[
             SourceReference(source=source, page_start=page, page_end=page)
         ],
-        chunks=chunks or [],
+        chunks=chunks,
         context_text=context,
     )
 
@@ -585,18 +596,19 @@ def test_agent_rejects_neighborhood_that_was_not_returned_by_search():
     assert response.search_count == 1
 
 
-def test_agent_stops_after_five_searches_and_returns_partial_answer():
+def test_agent_stops_after_two_searches_without_progress(caplog):
+    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
     model = ScriptedModel(
         {
             ToolModelResponse: [
-                _search_call(f"query {index}") for index in range(1, 6)
+                _search_call(f"query {index}") for index in range(1, 3)
             ],
             SufficiencyDecision: [
                 SufficiencyDecision(
                     verdict="insufficient",
                     missing_information="The final decision is not recorded.",
                 )
-                for _ in range(5)
+                for _ in range(2)
             ],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -610,15 +622,20 @@ def test_agent_stops_after_five_searches_and_returns_partial_answer():
         }
     )
     runtime = FakeRuntime(
-        [_result(f"query {index}", page=index) for index in range(1, 6)]
+        [_result(f"query {index}", page=index) for index in range(1, 3)]
     )
     agent = create_knowledge_agent(model, runtime)
 
     response = agent.ask("What was the final decision?", thread_id="thread-1")
 
     assert response.status == "partial"
-    assert response.search_count == 5
-    assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
+    assert response.search_count == 2
+    assert runtime.search_calls == ["query 1", "query 2"]
+    assert any(
+        "Early stopping: unchanged evidence gap after 2 retrievals"
+        in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer(
@@ -688,12 +705,204 @@ def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer(
     )
 
 
-def test_five_subquestions_each_receive_five_retrievals():
+def test_agent_deduplicates_and_scopes_evidence_by_subquestion():
+    shared = _chunk("guide-shared", 0, 1, "Shared provider evidence.")
+    provider_only = _chunk(
+        "guide-provider",
+        1,
+        2,
+        "Provider-only evidence.",
+    )
+    rationale_only = _chunk(
+        "guide-rationale",
+        2,
+        3,
+        "Rationale-only evidence.",
+    )
+    model = ScriptedModel(
+        {
+            QueryDecomposition: [
+                QueryDecomposition(
+                    subquestions=[
+                        "Which provider is used?",
+                        "Why was it selected?",
+                    ]
+                )
+            ],
+            ToolModelResponse: [
+                _search_call("provider"),
+                _search_call("provider rationale"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient"),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="Azure OpenAI is used for structured output.",
+                    cited_reference_ids=["S1", "S2", "S3"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result(
+                "provider",
+                chunks=[_chunk_hit(shared), _chunk_hit(provider_only)],
+            ),
+            _result(
+                "provider rationale",
+                chunks=[_chunk_hit(shared), _chunk_hit(rationale_only)],
+            ),
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask(
+        "Which provider is used and why?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    evaluator_prompts = [
+        str(call[1].content) for call in model.calls[SufficiencyDecision]
+    ]
+    assert "Shared provider evidence." in evaluator_prompts[0]
+    assert "Provider-only evidence." in evaluator_prompts[0]
+    assert "Rationale-only evidence." not in evaluator_prompts[0]
+    assert "Shared provider evidence." in evaluator_prompts[1]
+    assert "Provider-only evidence." not in evaluator_prompts[1]
+    assert "Rationale-only evidence." in evaluator_prompts[1]
+    answer_prompt = str(model.calls[FinalAnswerDraft][0][1].content)
+    assert answer_prompt.count("Shared provider evidence.") == 1
+    second_research_call = model.calls[ToolModelResponse][1]
+    assert all(message.type != "tool" for message in second_research_call)
+    assert not any(
+        "Provider-only evidence." in str(message.content)
+        for message in second_research_call
+    )
+
+
+def test_agent_continues_when_missing_information_changes():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("decision"),
+                _search_call("decision date"),
+                _search_call("decision approver"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The decision date is missing.",
+                ),
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The approver identity is missing.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The decision and approver are documented.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("decision", page=1),
+            _result("decision date", page=2),
+            _result("decision approver", page=3),
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("What was decided?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert response.search_count == 3
+    assert runtime.search_calls == [
+        "decision",
+        "decision date",
+        "decision approver",
+    ]
+
+
+def test_agent_stops_at_three_retrievals_when_each_adds_evidence(caplog):
+    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
+
+    def result_with_two_chunks(query, start):
+        return _result(
+            query,
+            chunks=[
+                _chunk_hit(
+                    _chunk(
+                        f"guide-{start:04d}",
+                        start,
+                        start,
+                        f"Evidence {start}.",
+                    )
+                ),
+                _chunk_hit(
+                    _chunk(
+                        f"guide-{start + 1:04d}",
+                        start + 1,
+                        start + 1,
+                        f"Evidence {start + 1}.",
+                    )
+                ),
+            ],
+        )
+
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call(f"query {index}") for index in range(1, 4)
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The final decision is not recorded.",
+                )
+                for _ in range(3)
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The final decision could not be established.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            result_with_two_chunks("query 1", 1),
+            result_with_two_chunks("query 2", 3),
+            result_with_two_chunks("query 3", 5),
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("What was the final decision?", thread_id="thread-1")
+
+    assert response.status == "partial"
+    assert response.search_count == 3
+    assert runtime.search_calls == ["query 1", "query 2", "query 3"]
+    assert any(
+        "Retrieval limit reached after 3 retrievals" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_five_subquestions_each_stop_after_two_retrievals_without_progress():
     subquestions = [f"Subquestion {index}?" for index in range(1, 6)]
     queries = [
         f"subquestion {subquestion_index} query {retrieval_index}"
         for subquestion_index in range(1, 6)
-        for retrieval_index in range(1, 6)
+        for retrieval_index in range(1, 3)
     ]
     model = ScriptedModel(
         {
@@ -730,21 +939,21 @@ def test_five_subquestions_each_receive_five_retrievals():
     )
 
     assert response.status == "partial"
-    assert response.search_count == 25
+    assert response.search_count == 10
     assert runtime.search_calls == queries
     answer_prompt = str(model.calls[FinalAnswerDraft][0][1].content)
     assert "Subquestion 1?: insufficient" in answer_prompt
     assert "Subquestion 5?: insufficient" in answer_prompt
 
 
-def test_agent_discloses_best_effort_answer_after_five_empty_searches():
+def test_agent_discloses_best_effort_answer_after_two_empty_searches():
     model = ScriptedModel(
         {
             ToolModelResponse: [
-                _search_call(f"query {index}") for index in range(1, 6)
+                _search_call(f"query {index}") for index in range(1, 3)
             ],
             SufficiencyDecision: [
-                SufficiencyDecision(verdict="sufficient") for _ in range(5)
+                SufficiencyDecision(verdict="sufficient") for _ in range(2)
             ],
             FinalAnswerDraft: [
                 FinalAnswerDraft(
@@ -755,7 +964,7 @@ def test_agent_discloses_best_effort_answer_after_five_empty_searches():
         }
     )
     runtime = FakeRuntime(
-        [_empty_result(f"query {index}") for index in range(1, 6)]
+        [_empty_result(f"query {index}") for index in range(1, 3)]
     )
     agent = create_knowledge_agent(model, runtime)
 
@@ -769,8 +978,8 @@ def test_agent_discloses_best_effort_answer_after_five_empty_searches():
     )
     assert response.status == "partial"
     assert response.references == []
-    assert response.search_count == 5
-    assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
+    assert response.search_count == 2
+    assert runtime.search_calls == ["query 1", "query 2"]
     answer_call = model.calls[FinalAnswerDraft][0]
     assert answer_call[0].content == NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 

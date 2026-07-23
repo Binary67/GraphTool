@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from graphtool.agents.knowledge.state import AgentChunkReference, AgentState
 from graphtool.chunking.types import Chunk
 from graphtool.retrieval import SourceReference
+from graphtool.retrieval.context import format_context
 from graphtool.runtime import GraphToolRuntime
+
+
+class SearchEvidenceChunk(AgentChunkReference):
+    context_text: str
 
 
 class KnowledgeSearchArtifact(BaseModel):
@@ -17,7 +22,7 @@ class KnowledgeSearchArtifact(BaseModel):
     query: str
     context_text: str
     references: list[SourceReference] = Field(default_factory=list)
-    chunks: list[AgentChunkReference] = Field(default_factory=list)
+    chunks: list[SearchEvidenceChunk] = Field(default_factory=list)
 
 
 class NeighborhoodChunk(AgentChunkReference):
@@ -60,7 +65,13 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
             query=normalized_query,
             context_text=result.context_text,
             references=result.references,
-            chunks=[_chunk_reference(hit.chunk) for hit in result.chunks],
+            chunks=[
+                SearchEvidenceChunk(
+                    **_chunk_reference(hit.chunk).model_dump(),
+                    context_text=format_context(normalized_query, [hit]),
+                )
+                for hit in result.chunks
+            ],
         )
         available_chunks = "\n".join(
             f"- {item.source} :: {item.chunk_id}" for item in artifact.chunks

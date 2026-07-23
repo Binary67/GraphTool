@@ -65,8 +65,11 @@ class EvidenceRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str
+    source: str
+    chunk_id: str
     context_text: str
     reference_ids: list[str] = Field(default_factory=list)
+    subquestion_indexes: list[int] = Field(default_factory=list)
 
 
 class AgentChunkReference(BaseModel):
@@ -100,9 +103,12 @@ class AgentState(TypedDict, total=False):
     references: list[EvidenceReference]
     search_count: int
     retrieval_count: int
+    retrieval_queries: list[str]
+    new_evidence_count: int
+    duplicate_evidence_count: int
+    previous_missing_information: str
     allowed_chunks: list[AgentChunkReference]
     used_neighborhoods: list[str]
-    tool_message_ids: list[str]
     research_action: Literal["tools", "respond", "answer"] | None
     direct_response: str | None
     evaluation: SufficiencyDecision | None

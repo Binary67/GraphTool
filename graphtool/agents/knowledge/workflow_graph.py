@@ -1,4 +1,5 @@
 import logging
+import re
 from time import perf_counter
 
 from langchain_core.language_models import BaseChatModel
@@ -55,9 +56,36 @@ from graphtool.agents.knowledge.workflow_context import (
     unique_ordered,
 )
 from graphtool.run_logging import LOGGER_NAME
+from graphtool.retrieval import SourceReference
 from graphtool.runtime import GraphToolRuntime
 
-MAX_RETRIEVALS_PER_SUBQUESTION = 5
+MAX_RETRIEVALS_PER_SUBQUESTION = 3
+NO_PROGRESS_MIN_RETRIEVALS = 2
+NO_PROGRESS_MAX_NEW_EVIDENCE = 1
+MISSING_INFORMATION_SIMILARITY_THRESHOLD = 0.45
+MISSING_INFORMATION_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "available",
+    "be",
+    "does",
+    "evidence",
+    "for",
+    "from",
+    "information",
+    "is",
+    "missing",
+    "not",
+    "of",
+    "or",
+    "retrieved",
+    "that",
+    "the",
+    "this",
+    "to",
+}
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 RESEARCH_TOOL_CORRECTION = (
     "Your previous response did not call a retrieval tool. The available "
@@ -228,6 +256,11 @@ def build_workflow_graph(
                 "messages": [response],
                 "research_action": "tools",
                 "direct_response": None,
+                "previous_missing_information": (
+                    state["evaluation"].missing_information
+                    if follow_up and state.get("evaluation") is not None
+                    else ""
+                ),
                 "evaluation": None,
             }
         if follow_up:
@@ -252,77 +285,113 @@ def build_workflow_graph(
         used_neighborhoods = list(state["used_neighborhoods"])
         search_count = state["search_count"]
         retrieval_count = state["retrieval_count"]
+        retrieval_queries = list(state["retrieval_queries"])
+        new_evidence_count = 0
+        duplicate_evidence_count = 0
         tool_messages = _trailing_tool_messages(state["messages"])
 
         for message in tool_messages:
             artifact = _tool_artifact(message)
             retrieval_count += 1
             if isinstance(artifact, KnowledgeSearchArtifact):
-                references, reference_ids = merge_references(
-                    references,
-                    artifact.references,
-                )
-                evidence.append(
-                    EvidenceRecord(
-                        query=artifact.query,
-                        context_text=artifact.context_text,
-                        reference_ids=reference_ids,
-                    )
-                )
+                retrieval_queries.append(artifact.query)
                 allowed_chunks = _merge_allowed_chunks(
                     allowed_chunks,
                     artifact.chunks,
                 )
                 search_count += 1
-            elif isinstance(artifact, ChunkNeighborhoodArtifact):
-                references, reference_ids = merge_references(
-                    references,
-                    artifact.references,
-                )
-                evidence.append(
-                    EvidenceRecord(
-                        query=(
-                            "Chunk neighborhood: "
-                            f"{artifact.source} :: {artifact.chunk_id}"
-                        ),
-                        context_text=artifact.context_text,
-                        reference_ids=reference_ids,
+                for chunk in artifact.chunks:
+                    references, reference_ids = merge_references(
+                        references,
+                        [_chunk_source_reference(chunk)],
                     )
+                    evidence, is_new = _merge_evidence_record(
+                        evidence,
+                        EvidenceRecord(
+                            query=artifact.query,
+                            source=chunk.source,
+                            chunk_id=chunk.chunk_id,
+                            context_text=chunk.context_text,
+                            reference_ids=reference_ids,
+                            subquestion_indexes=[state["subquestion_index"]],
+                        ),
+                        state["subquestion_index"],
+                    )
+                    if is_new:
+                        new_evidence_count += 1
+                    else:
+                        duplicate_evidence_count += 1
+            elif isinstance(artifact, ChunkNeighborhoodArtifact):
+                query = (
+                    "Chunk neighborhood: "
+                    f"{artifact.source} :: {artifact.chunk_id}"
                 )
+                retrieval_queries.append(query)
+                neighborhood_chunks = [
+                    chunk
+                    for chunk in (
+                        artifact.previous,
+                        artifact.current,
+                        artifact.next,
+                    )
+                    if chunk is not None
+                ]
+                for chunk in neighborhood_chunks:
+                    references, reference_ids = merge_references(
+                        references,
+                        [_chunk_source_reference(chunk)],
+                    )
+                    evidence, is_new = _merge_evidence_record(
+                        evidence,
+                        EvidenceRecord(
+                            query=query,
+                            source=chunk.source,
+                            chunk_id=chunk.chunk_id,
+                            context_text=_neighborhood_evidence_text(chunk),
+                            reference_ids=reference_ids,
+                            subquestion_indexes=[state["subquestion_index"]],
+                        ),
+                        state["subquestion_index"],
+                    )
+                    if is_new:
+                        new_evidence_count += 1
+                    else:
+                        duplicate_evidence_count += 1
                 key = _chunk_key(artifact.source, artifact.chunk_id)
                 if key not in used_neighborhoods:
                     used_neighborhoods.append(key)
             else:
-                error = (
-                    artifact.message
-                    if isinstance(artifact, ToolErrorArtifact)
-                    else str(message.content)
-                )
-                evidence.append(
-                    EvidenceRecord(
-                        query=f"Tool error: {message.name or 'unknown'}",
-                        context_text=error,
-                    )
+                retrieval_queries.append(
+                    f"Tool error: {message.name or 'unknown'}"
                 )
                 if message.name == "search_knowledge_base":
                     search_count += 1
 
-        tool_message_ids = list(state["tool_message_ids"])
         exchange_messages = _tool_exchange_messages(
             state["messages"],
             tool_messages,
         )
-        for message in exchange_messages:
-            if message.id is not None and message.id not in tool_message_ids:
-                tool_message_ids.append(message.id)
+        RUN_LOGGER.info(
+            "Retrieval progress: returned=%d, new=%d, duplicates=%d",
+            new_evidence_count + duplicate_evidence_count,
+            new_evidence_count,
+            duplicate_evidence_count,
+        )
         return {
+            "messages": [
+                RemoveMessage(id=message.id)
+                for message in exchange_messages
+                if message.id is not None
+            ],
             "evidence": evidence,
             "references": references,
             "allowed_chunks": allowed_chunks,
             "used_neighborhoods": used_neighborhoods,
             "search_count": search_count,
             "retrieval_count": retrieval_count,
-            "tool_message_ids": tool_message_ids,
+            "retrieval_queries": retrieval_queries,
+            "new_evidence_count": new_evidence_count,
+            "duplicate_evidence_count": duplicate_evidence_count,
             "research_action": None,
         }
 
@@ -341,7 +410,7 @@ def build_workflow_graph(
             SufficiencyDecision,
             evaluation_result,
         )
-        if decision.verdict == "sufficient" and not state["references"]:
+        if decision.verdict == "sufficient" and not _has_current_evidence(state):
             decision = SufficiencyDecision(
                 verdict="insufficient",
                 missing_information=(
@@ -387,6 +456,10 @@ def build_workflow_graph(
         return {
             "subquestion_index": state["subquestion_index"] + 1,
             "retrieval_count": 0,
+            "retrieval_queries": [],
+            "new_evidence_count": 0,
+            "duplicate_evidence_count": 0,
+            "previous_missing_information": "",
             "allowed_chunks": [],
             "used_neighborhoods": [],
             "research_action": None,
@@ -507,10 +580,6 @@ def build_workflow_graph(
 
     def cleanup(state: AgentState) -> dict:
         return {
-            "messages": [
-                RemoveMessage(id=message_id)
-                for message_id in state["tool_message_ids"]
-            ],
             "question": "",
             "subquestions": [],
             "subquestion_index": 0,
@@ -519,9 +588,12 @@ def build_workflow_graph(
             "references": [],
             "search_count": 0,
             "retrieval_count": 0,
+            "retrieval_queries": [],
+            "new_evidence_count": 0,
+            "duplicate_evidence_count": 0,
+            "previous_missing_information": "",
             "allowed_chunks": [],
             "used_neighborhoods": [],
-            "tool_message_ids": [],
             "research_action": None,
             "direct_response": None,
             "evaluation": None,
@@ -590,10 +662,19 @@ def _route_evaluation(state: AgentState) -> str:
         raise RuntimeError("Evidence evaluation is missing.")
     if evaluation.verdict == "conversation":
         return "finish_conversation"
-    if (
-        evaluation.verdict == "sufficient"
-        or state["retrieval_count"] >= MAX_RETRIEVALS_PER_SUBQUESTION
-    ):
+    if evaluation.verdict == "sufficient":
+        return "complete_subquestion"
+    if _retrieval_made_no_progress(state):
+        RUN_LOGGER.info(
+            "Early stopping: unchanged evidence gap after %d retrievals",
+            state["retrieval_count"],
+        )
+        return "complete_subquestion"
+    if state["retrieval_count"] >= MAX_RETRIEVALS_PER_SUBQUESTION:
+        RUN_LOGGER.info(
+            "Retrieval limit reached after %d retrievals",
+            state["retrieval_count"],
+        )
         return "complete_subquestion"
     return "research"
 
@@ -714,6 +795,83 @@ def _merge_allowed_chunks(
             merged.append(item)
             keys.add(key)
     return merged
+
+
+def _merge_evidence_record(
+    existing: list[EvidenceRecord],
+    incoming: EvidenceRecord,
+    subquestion_index: int,
+) -> tuple[list[EvidenceRecord], bool]:
+    merged = list(existing)
+    key = _chunk_key(incoming.source, incoming.chunk_id)
+    for index, record in enumerate(merged):
+        if _chunk_key(record.source, record.chunk_id) != key:
+            continue
+        if subquestion_index not in record.subquestion_indexes:
+            merged[index] = record.model_copy(
+                update={
+                    "subquestion_indexes": [
+                        *record.subquestion_indexes,
+                        subquestion_index,
+                    ]
+                }
+            )
+        return merged, False
+    merged.append(incoming)
+    return merged, True
+
+
+def _chunk_source_reference(chunk: AgentChunkReference) -> SourceReference:
+    return SourceReference(
+        source=chunk.source,
+        page_start=chunk.page_start,
+        page_end=chunk.page_end,
+    )
+
+
+def _neighborhood_evidence_text(chunk) -> str:
+    heading = " > ".join(chunk.heading_path)
+    metadata = f"{chunk.chunk_id} | {chunk.source}"
+    if chunk.page_start is not None:
+        metadata = f"{metadata} | pages {chunk.page_start}-{chunk.page_end}"
+    if heading:
+        metadata = f"{metadata} | {heading}"
+    return f"[{metadata}]\n{chunk.text}"
+
+
+def _has_current_evidence(state: AgentState) -> bool:
+    subquestion_index = state["subquestion_index"]
+    return any(
+        subquestion_index in record.subquestion_indexes
+        for record in state["evidence"]
+    )
+
+
+def _retrieval_made_no_progress(state: AgentState) -> bool:
+    if state["retrieval_count"] < NO_PROGRESS_MIN_RETRIEVALS:
+        return False
+    if state["new_evidence_count"] > NO_PROGRESS_MAX_NEW_EVIDENCE:
+        return False
+    evaluation = state.get("evaluation")
+    if evaluation is None:
+        return False
+    return _information_gap_similarity(
+        state.get("previous_missing_information", ""),
+        evaluation.missing_information,
+    ) >= MISSING_INFORMATION_SIMILARITY_THRESHOLD
+
+
+def _information_gap_similarity(left: str, right: str) -> float:
+    left_tokens = set(re.findall(r"[a-z0-9]+", left.casefold()))
+    right_tokens = set(re.findall(r"[a-z0-9]+", right.casefold()))
+    left_tokens -= MISSING_INFORMATION_STOP_WORDS
+    right_tokens -= MISSING_INFORMATION_STOP_WORDS
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / min(
+        len(left_tokens),
+        len(right_tokens),
+    )
 
 
 def _chunk_key(source: str, chunk_id: str) -> str:
