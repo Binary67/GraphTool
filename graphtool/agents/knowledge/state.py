@@ -74,7 +74,7 @@ class AgentState(TypedDict, total=False):
     allowed_chunks: list[AgentChunkReference]
     used_neighborhoods: list[str]
     tool_message_ids: list[str]
-    research_action: Literal["tools", "respond"] | None
+    research_action: Literal["tools", "respond", "answer"] | None
     direct_response: str | None
     evaluation: SufficiencyDecision | None
     response: AgentResponse | None

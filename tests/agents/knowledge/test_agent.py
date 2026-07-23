@@ -1,8 +1,10 @@
 from collections import defaultdict
 from itertools import count
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage
+from openai import APITimeoutError
 
 from graphtool.agents.knowledge import create_knowledge_agent
 from graphtool.agents.knowledge import workflow_graph
@@ -31,7 +33,10 @@ class ScriptedRunnable:
         self._calls[self._schema].append(list(messages))
         if not self._responses[self._schema]:
             raise AssertionError(f"No scripted response for {self._schema.__name__}")
-        return self._responses[self._schema].pop(0)
+        response = self._responses[self._schema].pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class ScriptedModel:
@@ -388,6 +393,90 @@ def test_agent_reformulates_search_after_insufficient_evidence():
         "Azure OpenAI decision rationale",
     ]
     assert response.references[0].page_start == 2
+
+
+def test_agent_corrects_missing_follow_up_tool_call():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("Azure OpenAI usage"),
+                _direct_response("I can answer now."),
+                _search_call("Azure OpenAI decision rationale"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The reason for the decision is missing.",
+                ),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="It was selected for structured output support.",
+                    cited_reference_ids=["S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("Azure OpenAI usage", page=1),
+            _result("Azure OpenAI decision rationale", page=2),
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("Why do we use Azure OpenAI?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert runtime.search_calls == [
+        "Azure OpenAI usage",
+        "Azure OpenAI decision rationale",
+    ]
+    corrective_call = model.calls[ToolModelResponse][2]
+    assert corrective_call[-1].content == (
+        "Your previous response did not call a retrieval tool. The available "
+        "evidence is insufficient, so call exactly one retrieval tool now. Do not "
+        "answer with prose."
+    )
+
+
+def test_agent_returns_partial_evidence_when_follow_up_research_times_out():
+    timeout = APITimeoutError(
+        request=httpx.Request("POST", "https://example.openai.azure.com")
+    )
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [
+                _search_call("Azure OpenAI usage"),
+                timeout,
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The reason for the decision is missing.",
+                )
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer=(
+                        "The available evidence describes its usage, but not the "
+                        "decision rationale."
+                    ),
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("Azure OpenAI usage", page=1)])
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask("Why do we use Azure OpenAI?", thread_id="thread-1")
+
+    assert response.status == "partial"
+    assert response.search_count == 1
+    assert response.references[0].page_start == 1
+    assert runtime.search_calls == ["Azure OpenAI usage"]
 
 
 def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():

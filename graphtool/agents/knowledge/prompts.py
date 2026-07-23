@@ -11,6 +11,12 @@ an earlier search in this turn, and only when the passage appears incomplete or
 needs adjacent document context. Search again instead when the topic is wrong or
 different evidence is needed. Use the unresolved evidence gap when present, and
 do not repeat earlier searches or neighborhood lookups.
+
+When unresolved information is present, the previous evidence was insufficient.
+You must call exactly one retrieval tool to address that gap and must not respond
+with prose. Use get_chunk_neighborhood only when adjacent context from an existing
+result may fill the gap. Otherwise call search_knowledge_base with a new focused
+query.
 """
 
 EVALUATOR_SYSTEM_PROMPT = """\
@@ -29,8 +35,9 @@ general model knowledge. Select only reference identifiers that directly support
 the answer. Do not write reference identifiers inside the answer text because the
 caller returns citations separately.
 
-When the search budget was exhausted, give the supported partial answer and state
-clearly what could not be established from the knowledge base.
+When research ends before the evidence becomes sufficient, give the supported
+partial answer and state clearly what could not be established from the knowledge
+base.
 """
 
 SUMMARY_SYSTEM_PROMPT = """\

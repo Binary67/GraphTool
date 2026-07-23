@@ -16,6 +16,7 @@ from langchain_core.messages.utils import (
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from openai import APITimeoutError
 from pydantic import BaseModel
 
 from graphtool.agents.knowledge.prompts import (
@@ -54,6 +55,11 @@ from graphtool.runtime import GraphToolRuntime
 
 MAX_RETRIEVALS_PER_TURN = 5
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
+RESEARCH_TOOL_CORRECTION = (
+    "Your previous response did not call a retrieval tool. The available "
+    "evidence is insufficient, so call exactly one retrieval tool now. Do not "
+    "answer with prose."
+)
 NO_EVIDENCE_DISCLOSURE = (
     "I couldn't find supporting information in the knowledge base. The following "
     "is a best-effort answer based on general knowledge and is not verified "
@@ -72,11 +78,6 @@ def build_workflow_graph(
     tools = create_knowledge_tools(runtime)
     summary_model = model.with_structured_output(ConversationSummary)
     research_model = model.bind_tools(tools, parallel_tool_calls=False)
-    required_research_model = model.bind_tools(
-        tools,
-        tool_choice="required",
-        parallel_tool_calls=False,
-    )
     evaluator_model = model.with_structured_output(SufficiencyDecision)
     answer_model = model.with_structured_output(FinalAnswerDraft)
 
@@ -132,11 +133,9 @@ def build_workflow_graph(
         }
 
     def research(state: AgentState) -> dict:
-        active_model = (
-            required_research_model
-            if state.get("evaluation") is not None
+        follow_up = (
+            state.get("evaluation") is not None
             and state["evaluation"].verdict == "insufficient"
-            else research_model
         )
         round_number = state["retrieval_count"] + 1
         research_messages = [
@@ -144,17 +143,49 @@ def build_workflow_graph(
             HumanMessage(content=research_context(state)),
             *state["messages"],
         ]
-        response, duration = _invoke_model(
-            active_model,
-            research_messages,
-            stage=f"research round {round_number}",
-        )
-        if not isinstance(response, AIMessage):
-            raise TypeError("Tool-bound research model must return an AIMessage.")
+        try:
+            response, duration = _invoke_model(
+                research_model,
+                research_messages,
+                stage=f"research round {round_number}",
+            )
+            research_duration = duration
+            if not isinstance(response, AIMessage):
+                raise TypeError(
+                    "Tool-bound research model must return an AIMessage."
+                )
+            if follow_up and not response.tool_calls:
+                RUN_LOGGER.info(
+                    "Research round %d did not select a tool; retrying with a "
+                    "correction",
+                    round_number,
+                )
+                response, correction_duration = _invoke_model(
+                    research_model,
+                    [
+                        *research_messages,
+                        response,
+                        HumanMessage(content=RESEARCH_TOOL_CORRECTION),
+                    ],
+                    stage=f"research round {round_number} corrective retry",
+                )
+                research_duration += correction_duration
+                if not isinstance(response, AIMessage):
+                    raise TypeError(
+                        "Tool-bound research model must return an AIMessage."
+                    )
+        except APITimeoutError:
+            if follow_up and state["retrieval_count"] > 0:
+                RUN_LOGGER.warning(
+                    "Follow-up research timed out; answering with the evidence "
+                    "already retrieved"
+                )
+                return {"research_action": "answer", "direct_response": None}
+            raise
         RUN_LOGGER.info(
             "Research round %d completed in %.2fs",
             round_number,
-            duration,
+            research_duration,
         )
         if response.tool_calls:
             _log_tool_selection(response.tool_calls[0])
@@ -164,6 +195,16 @@ def build_workflow_graph(
                 "direct_response": None,
                 "evaluation": None,
             }
+        if follow_up:
+            if state["retrieval_count"] == 0:
+                raise RuntimeError(
+                    "Research model did not select a retrieval tool after correction."
+                )
+            RUN_LOGGER.warning(
+                "Follow-up research did not select a tool after correction; "
+                "answering with the evidence already retrieved"
+            )
+            return {"research_action": "answer", "direct_response": None}
         return {
             "research_action": "respond",
             "direct_response": _message_text(response).strip(),
@@ -440,7 +481,7 @@ def build_workflow_graph(
     builder.add_conditional_edges(
         "research",
         _route_research,
-        {"tools": "tools", "evaluate": "evaluate"},
+        {"tools": "tools", "evaluate": "evaluate", "answer": "answer"},
     )
     builder.add_edge("tools", "record_tool_results")
     builder.add_edge("record_tool_results", "evaluate")
@@ -464,6 +505,8 @@ def _route_research(state: AgentState) -> str:
         return "tools"
     if state.get("research_action") == "respond":
         return "evaluate"
+    if state.get("research_action") == "answer":
+        return "answer"
     raise RuntimeError("Research action is missing.")
 
 
