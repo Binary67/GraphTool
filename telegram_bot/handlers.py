@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from contextlib import suppress
+from time import perf_counter
 
 from telegram import Chat, Message, Update
 from telegram.constants import ChatAction
@@ -9,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from graphtool.agents import AgentResponse, KnowledgeAgent
 from graphtool.retrieval import format_source_reference
+from graphtool.run_logging import LOGGER_NAME
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4_096
 TYPING_REFRESH_INTERVAL_SECONDS = 4
@@ -30,7 +32,7 @@ class TelegramHandlers:
         self._agent = agent
         self._allowed_user_ids = allowed_user_ids
         self._agent_lock = asyncio.Lock()
-        self._logger = logging.getLogger("graphtool.run")
+        self._logger = logging.getLogger(LOGGER_NAME)
 
     async def start(
         self,
@@ -89,10 +91,16 @@ class TelegramHandlers:
         if not question:
             return
         thread_id = telegram_thread_id(update)
+        self._logger.info("Received Telegram question")
+        queue_started_at = perf_counter()
         typing_task = asyncio.create_task(self._show_typing(message))
         try:
             try:
                 async with self._agent_lock:
+                    self._logger.info(
+                        "Telegram queue wait: %.2fs",
+                        perf_counter() - queue_started_at,
+                    )
                     response = await asyncio.to_thread(
                         self._agent.ask,
                         question,
@@ -110,8 +118,15 @@ class TelegramHandlers:
             with suppress(asyncio.CancelledError):
                 await typing_task
 
-        for part in split_telegram_message(format_agent_response(response)):
+        parts = split_telegram_message(format_agent_response(response))
+        send_started_at = perf_counter()
+        for part in parts:
             await message.reply_text(part)
+        self._logger.info(
+            "Sent Telegram response in %.2fs: messages=%d",
+            perf_counter() - send_started_at,
+            len(parts),
+        )
 
     async def _show_typing(self, message: Message) -> None:
         while True:

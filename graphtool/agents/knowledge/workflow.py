@@ -1,13 +1,18 @@
+import logging
+from time import perf_counter
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from graphtool.agents.knowledge.state import AgentResponse
 from graphtool.agents.knowledge.workflow_graph import build_workflow_graph
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.runtime import GraphToolRuntime
 
 DEFAULT_COMPACT_TRIGGER_TOKENS = 32_000
 DEFAULT_COMPACT_RECENT_TOKENS = 8_000
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 class KnowledgeAgent:
@@ -39,6 +44,7 @@ class KnowledgeAgent:
         )
 
     def ask(self, question: str, *, thread_id: str) -> AgentResponse:
+        started_at = perf_counter()
         normalized_question = question.strip()
         if not normalized_question:
             raise ValueError("Question must not be empty.")
@@ -49,6 +55,7 @@ class KnowledgeAgent:
             raise FileNotFoundError(
                 "Knowledge base not found. Synchronize documents before asking."
             )
+        RUN_LOGGER.info("Agent processing started")
 
         config = {
             "configurable": {"thread_id": normalized_thread_id},
@@ -75,6 +82,14 @@ class KnowledgeAgent:
         response = result.get("response")
         if not isinstance(response, AgentResponse):
             raise RuntimeError("Knowledge agent completed without a response.")
+        RUN_LOGGER.info(
+            "Agent processing completed in %.2fs: status=%s, searches=%d, "
+            "references=%d",
+            perf_counter() - started_at,
+            response.status,
+            response.search_count,
+            len(response.references),
+        )
         self._checkpointer.delete_thread(normalized_thread_id)
         checkpoint_state = {**result, "response": None}
         self._graph.update_state(config, checkpoint_state, as_node="cleanup")

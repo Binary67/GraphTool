@@ -128,6 +128,33 @@ def test_message_asks_agent_and_formats_sources():
     ]
 
 
+def test_message_logs_queue_and_send_timings(monkeypatch):
+    async def run_in_place(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr("telegram_bot.handlers.asyncio.to_thread", run_in_place)
+    response = AgentResponse(
+        answer="GraphTool builds a graph.",
+        status="complete",
+        search_count=1,
+    )
+    update = _update(text="What does GraphTool do?")
+    handlers = TelegramHandlers(FakeAgent(response=response), frozenset({123}))
+    calls = []
+    handlers._logger = type(
+        "FakeLogger",
+        (),
+        {"info": lambda self, *args: calls.append(args)},
+    )()
+
+    asyncio.run(handlers.message(update, None))
+
+    assert calls[0] == ("Received Telegram question",)
+    assert calls[1][0] == "Telegram queue wait: %.2fs"
+    assert calls[2][0] == "Sent Telegram response in %.2fs: messages=%d"
+    assert calls[2][2] == 1
+
+
 def test_message_shows_typing_until_agent_finishes(monkeypatch):
     monkeypatch.setattr(
         "telegram_bot.handlers.TYPING_REFRESH_INTERVAL_SECONDS",

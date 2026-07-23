@@ -5,6 +5,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from graphtool.agents.knowledge import create_knowledge_agent
+from graphtool.agents.knowledge import workflow_graph
 from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
@@ -175,6 +176,75 @@ def _chunk_hit(chunk):
         linked_nodes=[],
         linked_relationships=[],
     )
+
+
+def test_research_tool_selection_is_logged_human_readably(monkeypatch):
+    logger = type(
+        "FakeLogger",
+        (),
+        {"info": lambda self, *args: calls.append(args)},
+    )()
+    calls = []
+    monkeypatch.setattr(workflow_graph, "RUN_LOGGER", logger)
+
+    workflow_graph._log_tool_selection(
+        {
+            "name": "search_knowledge_base",
+            "args": {"query": "GraphTool authentication"},
+        }
+    )
+    workflow_graph._log_tool_selection(
+        {
+            "name": "get_chunk_neighborhood",
+            "args": {"source": "guide.pdf", "chunk_id": "guide-0013"},
+        }
+    )
+
+    assert calls == [
+        ("Research selected: %s", "search_knowledge_base"),
+        ("Search query: %s", "GraphTool authentication"),
+        ("Research selected: %s", "get_chunk_neighborhood"),
+        ("Chunk neighborhood: %s :: %s", "guide.pdf", "guide-0013"),
+    ]
+
+
+def test_model_failure_logs_stage_duration_and_status(monkeypatch):
+    class FailingModel:
+        def invoke(self, messages):
+            del messages
+            error = RuntimeError("Azure details")
+            error.status_code = 429
+            raise error
+
+    calls = []
+    logger = type(
+        "FakeLogger",
+        (),
+        {
+            "info": lambda self, *args: calls.append(("info", *args)),
+            "error": lambda self, *args: calls.append(("error", *args)),
+        },
+    )()
+    monkeypatch.setattr(workflow_graph, "RUN_LOGGER", logger)
+
+    with pytest.raises(RuntimeError, match="Azure details"):
+        workflow_graph._invoke_model(
+            FailingModel(),
+            [AIMessage(content="Question")],
+            stage="research round 2",
+        )
+
+    assert calls[0][0:2] == (
+        "info",
+        "Starting %s: prompt approximately %d tokens",
+    )
+    assert calls[0][2] == "research round 2"
+    assert calls[1][0:2] == (
+        "error",
+        "%s failed after %.2fs: %s (status=%s)",
+    )
+    assert calls[1][2] == "Research round 2"
+    assert calls[1][4:] == ("RuntimeError", 429)
 
 
 def test_agent_retries_answer_with_same_evidence_for_unknown_citation():

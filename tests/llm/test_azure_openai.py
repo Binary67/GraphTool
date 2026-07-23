@@ -1,6 +1,8 @@
 from pydantic import BaseModel
 
 from graphtool.llm.azure_openai import (
+    AGENT_MAX_RETRIES,
+    AGENT_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAIAudioTranscriber,
     AzureOpenAIClient,
     create_azure_openai_agent_model,
@@ -131,6 +133,8 @@ def test_constructs_agent_model_with_dedicated_deployment(monkeypatch):
             "model": "agent-deployment",
             "base_url": config.endpoint,
             "api_key": config.api_key,
+            "timeout": AGENT_REQUEST_TIMEOUT_SECONDS,
+            "max_retries": AGENT_MAX_RETRIES,
         }
     ]
 

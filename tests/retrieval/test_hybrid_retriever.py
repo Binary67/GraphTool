@@ -10,6 +10,7 @@ from graphtool.retrieval import (
     RetrievalResult,
 )
 from graphtool.retrieval.hybrid_retriever import retrieve_hybrid_context
+from graphtool.retrieval.hybrid_retriever import prepare_hybrid_retriever
 from graphtool.retrieval.retriever import retrieve_context
 
 
@@ -231,3 +232,25 @@ def test_hybrid_search_embeds_query_once_for_chunk_and_graph_search():
     )
 
     assert embedding.calls.count("How is Alpha related to Gamma?") == 1
+
+
+def test_prepared_hybrid_search_logs_stage_timings_and_result_counts(monkeypatch):
+    graph, chunks = _corpus()
+    logger = type(
+        "FakeLogger",
+        (),
+        {"info": lambda self, *args: calls.append(args)},
+    )()
+    calls = []
+    monkeypatch.setattr(hybrid_retriever, "RUN_LOGGER", logger)
+    prepared = prepare_hybrid_retriever(graph, chunks)
+
+    prepared.retrieve("How is Alpha related to Gamma?")
+
+    messages = [call[0] for call in calls]
+    assert messages == [
+        "Direct retrieval completed in %.2fs",
+        "Graph retrieval completed in %.2fs",
+        "Retrieval completed in %.2fs: chunks=%d, sources=%d, graph paths=%d",
+    ]
+    assert calls[-1][2:] == (2, 1, 3)

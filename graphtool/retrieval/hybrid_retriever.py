@@ -1,5 +1,7 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import KnowledgeGraph
@@ -24,8 +26,10 @@ from graphtool.retrieval.retriever import (
     retrieve_context,
 )
 from graphtool.retrieval.types import ChunkHit, RetrievalResult
+from graphtool.run_logging import LOGGER_NAME
 
 RECIPROCAL_RANK_CONSTANT = 60
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 @dataclass(frozen=True)
@@ -42,16 +46,28 @@ class PreparedHybridRetriever:
         top_paths: int = DEFAULT_TOP_PATHS,
         top_chunks: int = 5,
     ) -> RetrievalResult:
+        retrieval_started_at = perf_counter()
         query_vector = None
         if self.embedding_client is not None and (
             self.direct.chunk_vectors or self.graph.node_vectors
         ):
+            started_at = perf_counter()
             query_vector = self.embedding_client.embed_texts([query])[0]
+            RUN_LOGGER.info(
+                "Query embedding completed in %.2fs",
+                perf_counter() - started_at,
+            )
+        started_at = perf_counter()
         direct_result = self.direct.retrieve(
             query,
             top_chunks=top_chunks,
             query_vector=query_vector,
         )
+        RUN_LOGGER.info(
+            "Direct retrieval completed in %.2fs",
+            perf_counter() - started_at,
+        )
+        started_at = perf_counter()
         graph_result = self.graph.retrieve(
             query,
             max_hops=max_hops,
@@ -59,7 +75,19 @@ class PreparedHybridRetriever:
             top_chunks=top_chunks,
             query_vector=query_vector,
         )
-        return _combine_results(query, direct_result, graph_result, top_chunks)
+        RUN_LOGGER.info(
+            "Graph retrieval completed in %.2fs",
+            perf_counter() - started_at,
+        )
+        result = _combine_results(query, direct_result, graph_result, top_chunks)
+        RUN_LOGGER.info(
+            "Retrieval completed in %.2fs: chunks=%d, sources=%d, graph paths=%d",
+            perf_counter() - retrieval_started_at,
+            len(result.chunks),
+            len(result.sources),
+            len(result.graph_paths),
+        )
+        return result
 
 
 def prepare_hybrid_retriever(

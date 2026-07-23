@@ -1,3 +1,6 @@
+import logging
+from time import perf_counter
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -46,9 +49,11 @@ from graphtool.agents.knowledge.workflow_context import (
     summary_text,
     unique_ordered,
 )
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.runtime import GraphToolRuntime
 
 MAX_RETRIEVALS_PER_TURN = 5
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 NO_EVIDENCE_DISCLOSURE = (
     "I couldn't find supporting information in the knowledge base. The following "
     "is a best-effort answer based on general knowledge and is not verified "
@@ -98,16 +103,24 @@ def build_workflow_graph(
         if not messages_to_summarize:
             return {}
 
+        summary_messages = [
+            SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
+            HumanMessage(
+                content=summary_text(summary, messages_to_summarize)
+            ),
+        ]
+        summary_result, duration = _invoke_model(
+            summary_model,
+            summary_messages,
+            stage="conversation summary",
+        )
         updated_summary = _validated_output(
             ConversationSummary,
-            summary_model.invoke(
-                [
-                    SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
-                    HumanMessage(
-                        content=summary_text(summary, messages_to_summarize)
-                    ),
-                ]
-            ),
+            summary_result,
+        )
+        RUN_LOGGER.info(
+            "Conversation summary completed in %.2fs",
+            duration,
         )
         return {
             "conversation_summary": updated_summary.summary.strip(),
@@ -125,16 +138,26 @@ def build_workflow_graph(
             and state["evaluation"].verdict == "insufficient"
             else research_model
         )
-        response = active_model.invoke(
-            [
-                SystemMessage(content=RESEARCH_SYSTEM_PROMPT),
-                HumanMessage(content=research_context(state)),
-                *state["messages"],
-            ]
+        round_number = state["retrieval_count"] + 1
+        research_messages = [
+            SystemMessage(content=RESEARCH_SYSTEM_PROMPT),
+            HumanMessage(content=research_context(state)),
+            *state["messages"],
+        ]
+        response, duration = _invoke_model(
+            active_model,
+            research_messages,
+            stage=f"research round {round_number}",
         )
         if not isinstance(response, AIMessage):
             raise TypeError("Tool-bound research model must return an AIMessage.")
+        RUN_LOGGER.info(
+            "Research round %d completed in %.2fs",
+            round_number,
+            duration,
+        )
         if response.tool_calls:
+            _log_tool_selection(response.tool_calls[0])
             return {
                 "messages": [response],
                 "research_action": "tools",
@@ -228,14 +251,19 @@ def build_workflow_graph(
         }
 
     def evaluate(state: AgentState) -> dict:
+        round_number = state["retrieval_count"]
+        evaluation_messages = [
+            SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+            HumanMessage(content=evaluation_text(state)),
+        ]
+        evaluation_result, duration = _invoke_model(
+            evaluator_model,
+            evaluation_messages,
+            stage=f"evidence evaluation round {round_number}",
+        )
         decision = _validated_output(
             SufficiencyDecision,
-            evaluator_model.invoke(
-                [
-                    SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
-                    HumanMessage(content=evaluation_text(state)),
-                ]
-            ),
+            evaluation_result,
         )
         if decision.verdict == "sufficient" and not state["references"]:
             decision = SufficiencyDecision(
@@ -255,9 +283,21 @@ def build_workflow_graph(
                     or "The request requires a knowledge-base-grounded answer."
                 ),
             )
+        RUN_LOGGER.info(
+            "Evidence evaluation round %d completed in %.2fs: %s",
+            round_number,
+            duration,
+            decision.verdict,
+        )
+        if decision.missing_information:
+            RUN_LOGGER.info(
+                "Missing information: %s",
+                decision.missing_information,
+            )
         return {"evaluation": decision}
 
     def answer(state: AgentState) -> dict:
+        answer_started_at = perf_counter()
         partial = (
             state["evaluation"] is None
             or state["evaluation"].verdict != "sufficient"
@@ -272,14 +312,18 @@ def build_workflow_graph(
         references_by_id = {
             item.id: item.reference for item in state["references"]
         }
+        answer_messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=prompt_text),
+        ]
+        answer_result, _ = _invoke_model(
+            answer_model,
+            answer_messages,
+            stage="answer generation",
+        )
         draft = _validated_output(
             FinalAnswerDraft,
-            answer_model.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=prompt_text),
-                ]
-            ),
+            answer_result,
         )
         cited_ids = unique_ordered(draft.cited_reference_ids)
         unknown_ids = [
@@ -290,23 +334,27 @@ def build_workflow_graph(
         if unknown_ids:
             valid_ids = ", ".join(references_by_id) or "[None]"
             invalid_ids = ", ".join(unknown_ids)
+            retry_messages = [
+                SystemMessage(
+                    content=(
+                        f"{system_prompt}\n\n"
+                        "Your previous draft cited unknown reference IDs: "
+                        f"{invalid_ids}. Regenerate the answer using only "
+                        f"these available reference IDs: {valid_ids}. Remove "
+                        "or qualify any claim that the available evidence "
+                        "does not support."
+                    )
+                ),
+                HumanMessage(content=prompt_text),
+            ]
+            retry_result, _ = _invoke_model(
+                answer_model,
+                retry_messages,
+                stage="answer citation retry",
+            )
             draft = _validated_output(
                 FinalAnswerDraft,
-                answer_model.invoke(
-                    [
-                        SystemMessage(
-                            content=(
-                                f"{system_prompt}\n\n"
-                                "Your previous draft cited unknown reference IDs: "
-                                f"{invalid_ids}. Regenerate the answer using only "
-                                f"these available reference IDs: {valid_ids}. Remove "
-                                "or qualify any claim that the available evidence "
-                                "does not support."
-                            )
-                        ),
-                        HumanMessage(content=prompt_text),
-                    ]
-                ),
+                retry_result,
             )
             cited_ids = unique_ordered(draft.cited_reference_ids)
             unknown_ids = [
@@ -335,6 +383,12 @@ def build_workflow_graph(
             status="partial" if partial else "complete",
             references=cited_references,
             search_count=state["search_count"],
+        )
+        RUN_LOGGER.info(
+            "Answer completed in %.2fs: status=%s, references=%d",
+            perf_counter() - answer_started_at,
+            response.status,
+            len(response.references),
         )
         return {
             "messages": [AIMessage(content=response.answer)],
@@ -425,6 +479,52 @@ def _route_evaluation(state: AgentState) -> str:
     ):
         return "answer"
     return "research"
+
+
+def _log_tool_selection(tool_call: dict) -> None:
+    name = str(tool_call.get("name", "unknown"))
+    arguments = tool_call.get("args", {})
+    RUN_LOGGER.info("Research selected: %s", name)
+    if not isinstance(arguments, dict):
+        return
+    if name == "search_knowledge_base":
+        RUN_LOGGER.info("Search query: %s", arguments.get("query", ""))
+    elif name == "get_chunk_neighborhood":
+        RUN_LOGGER.info(
+            "Chunk neighborhood: %s :: %s",
+            arguments.get("source", ""),
+            arguments.get("chunk_id", ""),
+        )
+
+
+def _invoke_model(model, messages: list, *, stage: str):
+    RUN_LOGGER.info(
+        "Starting %s: prompt approximately %d tokens",
+        stage,
+        count_tokens_approximately(messages),
+    )
+    started_at = perf_counter()
+    try:
+        return model.invoke(messages), perf_counter() - started_at
+    except Exception as exc:
+        duration = perf_counter() - started_at
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            RUN_LOGGER.error(
+                "%s failed after %.2fs: %s",
+                stage.capitalize(),
+                duration,
+                type(exc).__name__,
+            )
+        else:
+            RUN_LOGGER.error(
+                "%s failed after %.2fs: %s (status=%s)",
+                stage.capitalize(),
+                duration,
+                type(exc).__name__,
+                status_code,
+            )
+        raise
 
 
 def _validated_output(model_type: type[BaseModel], value):

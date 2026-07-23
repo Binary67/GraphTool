@@ -2,6 +2,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from graphtool.agents import KnowledgeAgent, create_knowledge_agent
 from graphtool.llm import (
+    AGENT_MAX_RETRIES,
+    AGENT_REQUEST_TIMEOUT_SECONDS,
     create_azure_openai_agent_model,
     load_azure_openai_config,
 )
@@ -29,6 +31,11 @@ def run_telegram_bot() -> None:
     paths = default_paths()
     logger = configure_run_logger(paths.logs_dir, DEFAULT_MAX_LOG_FILES)
     logger.info("Starting GraphTool Telegram bot")
+    logger.info(
+        "Azure agent requests: timeout=%ds, retries=%d",
+        AGENT_REQUEST_TIMEOUT_SECONDS,
+        AGENT_MAX_RETRIES,
+    )
 
     try:
         telegram_config = load_telegram_bot_config()

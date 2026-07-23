@@ -16,6 +16,8 @@ from graphtool.llm.types import (
 )
 
 T = TypeVar("T")
+AGENT_REQUEST_TIMEOUT_SECONDS = 60
+AGENT_MAX_RETRIES = 1
 
 
 class AzureOpenAIClient:
@@ -100,6 +102,8 @@ def create_azure_openai_agent_model(
         model=config.agent_deployment,
         base_url=config.endpoint,
         api_key=config.api_key,
+        timeout=AGENT_REQUEST_TIMEOUT_SECONDS,
+        max_retries=AGENT_MAX_RETRIES,
     )
 
 

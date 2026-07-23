@@ -1,6 +1,8 @@
 """Provider-neutral LLM interface and Azure OpenAI implementation."""
 
 from graphtool.llm.azure_openai import (
+    AGENT_MAX_RETRIES,
+    AGENT_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAIAudioTranscriber,
     AzureOpenAIClient,
     create_azure_openai_agent_model,
@@ -17,6 +19,8 @@ from graphtool.llm.types import (
 
 __all__ = [
     "AudioTranscriptionClient",
+    "AGENT_MAX_RETRIES",
+    "AGENT_REQUEST_TIMEOUT_SECONDS",
     "AzureOpenAIAudioTranscriber",
     "AzureOpenAIClient",
     "AzureOpenAIConfig",
