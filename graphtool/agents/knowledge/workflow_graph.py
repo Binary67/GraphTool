@@ -76,8 +76,8 @@ def build_workflow_graph(
     runtime: GraphToolRuntime,
     checkpointer: InMemorySaver,
     *,
-    compact_trigger_tokens: int,
-    compact_recent_tokens: int,
+    compaction_trigger_tokens: int,
+    retained_recent_tokens: int,
 ):
     tools = create_knowledge_tools(runtime)
     summary_model = model.with_structured_output(ConversationSummary)
@@ -89,12 +89,15 @@ def build_workflow_graph(
     def compact(state: AgentState) -> dict:
         summary = state.get("conversation_summary", "")
         messages = state["messages"]
-        if conversation_token_count(summary, messages) < compact_trigger_tokens:
+        if (
+            conversation_token_count(summary, messages)
+            < compaction_trigger_tokens
+        ):
             return {}
 
         retained_messages = trim_messages(
             messages,
-            max_tokens=compact_recent_tokens,
+            max_tokens=retained_recent_tokens,
             token_counter=count_tokens_approximately,
             strategy="last",
             allow_partial=False,

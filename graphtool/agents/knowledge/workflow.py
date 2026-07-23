@@ -10,8 +10,8 @@ from graphtool.agents.knowledge.workflow_graph import build_workflow_graph
 from graphtool.run_logging import LOGGER_NAME
 from graphtool.runtime import GraphToolRuntime
 
-DEFAULT_COMPACT_TRIGGER_TOKENS = 32_000
-DEFAULT_COMPACT_RECENT_TOKENS = 8_000
+DEFAULT_COMPACTION_TRIGGER_TOKENS = 256_000
+DEFAULT_RETAINED_RECENT_TOKENS = 64_000
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
@@ -21,16 +21,16 @@ class KnowledgeAgent:
         model: BaseChatModel,
         runtime: GraphToolRuntime,
         *,
-        compact_trigger_tokens: int = DEFAULT_COMPACT_TRIGGER_TOKENS,
-        compact_recent_tokens: int = DEFAULT_COMPACT_RECENT_TOKENS,
+        compaction_trigger_tokens: int = DEFAULT_COMPACTION_TRIGGER_TOKENS,
+        retained_recent_tokens: int = DEFAULT_RETAINED_RECENT_TOKENS,
     ) -> None:
-        if compact_trigger_tokens < 1:
+        if compaction_trigger_tokens < 1:
             raise ValueError("Compaction trigger token count must be positive.")
-        if compact_recent_tokens < 1:
-            raise ValueError("Recent conversation token count must be positive.")
-        if compact_recent_tokens >= compact_trigger_tokens:
+        if retained_recent_tokens < 1:
+            raise ValueError("Retained recent token count must be positive.")
+        if retained_recent_tokens >= compaction_trigger_tokens:
             raise ValueError(
-                "Recent conversation token count must be less than the "
+                "Retained recent token count must be less than the "
                 "compaction trigger."
             )
         self._runtime = runtime
@@ -39,8 +39,8 @@ class KnowledgeAgent:
             model,
             runtime,
             self._checkpointer,
-            compact_trigger_tokens=compact_trigger_tokens,
-            compact_recent_tokens=compact_recent_tokens,
+            compaction_trigger_tokens=compaction_trigger_tokens,
+            retained_recent_tokens=retained_recent_tokens,
         )
 
     def ask(self, question: str, *, thread_id: str) -> AgentResponse:
@@ -109,12 +109,12 @@ def create_knowledge_agent(
     model: BaseChatModel,
     runtime: GraphToolRuntime,
     *,
-    compact_trigger_tokens: int = DEFAULT_COMPACT_TRIGGER_TOKENS,
-    compact_recent_tokens: int = DEFAULT_COMPACT_RECENT_TOKENS,
+    compaction_trigger_tokens: int = DEFAULT_COMPACTION_TRIGGER_TOKENS,
+    retained_recent_tokens: int = DEFAULT_RETAINED_RECENT_TOKENS,
 ) -> KnowledgeAgent:
     return KnowledgeAgent(
         model,
         runtime,
-        compact_trigger_tokens=compact_trigger_tokens,
-        compact_recent_tokens=compact_recent_tokens,
+        compaction_trigger_tokens=compaction_trigger_tokens,
+        retained_recent_tokens=retained_recent_tokens,
     )

@@ -108,9 +108,9 @@ embeddings before queries are served.
 
 Calls using the same thread ID share conversation history while the process is
 running. By default, older history is summarized when the conversation reaches
-approximately 32,000 tokens, while the most recent 8,000 tokens remain verbatim.
-These limits can be changed with `compact_trigger_tokens` and
-`compact_recent_tokens` when creating the agent.
+approximately 256,000 tokens, while the most recent 64,000 tokens remain
+verbatim. These limits can be changed with `compaction_trigger_tokens` and
+`retained_recent_tokens` when creating the agent.
 
 The agent binds two read-only tools: `search_knowledge_base` searches document
 chunks and knowledge-graph paths, while `get_chunk_neighborhood` retrieves the

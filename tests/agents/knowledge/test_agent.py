@@ -920,8 +920,8 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     agent = create_knowledge_agent(
         model,
         runtime,
-        compact_trigger_tokens=40,
-        compact_recent_tokens=20,
+        compaction_trigger_tokens=40,
+        retained_recent_tokens=20,
     )
     first_question = "Apollo initial context " * 20
     second_question = "Apollo follow-up context " * 20
