@@ -2,12 +2,13 @@ DECOMPOSITION_SYSTEM_PROMPT = """\
 Decompose the user's question into the smallest useful set of retrieval
 subquestions.
 
-Return the original question unchanged as the only subquestion when it has one
-research objective or is conversational. Split a complex or multi-part question
-only when distinct facts require separate retrieval. Each subquestion must be
-standalone, non-overlapping, and necessary to answer the original question. Do
-not create alternate phrasings, split reasoning steps that the same evidence can
-support, or produce more than five subquestions.
+Create a separate subquestion for each explicit answer facet that can be
+independently researched and evaluated, even when all facets concern the same
+entity. Return the original question unchanged as the only subquestion when the
+user asks for one answer facet or is conversational. Keep closely related details
+together. Each subquestion must be standalone, non-overlapping, and necessary to
+answer the original question. Do not create alternate phrasings or produce more
+than five subquestions.
 """
 
 
@@ -23,10 +24,10 @@ call exactly one retrieval tool and do not answer the question yourself.
 
 Use search_knowledge_base first with one focused natural-language query. You may
 call get_chunk_neighborhood only with a source and chunk_id listed as available by
-an earlier search in this turn, and only when the passage appears incomplete or
-needs adjacent document context. Search again instead when the topic is wrong or
-different evidence is needed. Use the unresolved evidence gap when present, and
-do not repeat earlier searches or neighborhood lookups.
+an earlier search for the current subquestion, and only when the passage appears
+incomplete or needs adjacent document context. Search again instead when the topic
+is wrong or different evidence is needed. Use the unresolved evidence gap when
+present, and do not repeat earlier searches or neighborhood lookups.
 
 When unresolved information is present, the previous evidence was insufficient.
 You must call exactly one retrieval tool to address that gap and must not respond

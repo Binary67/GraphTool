@@ -152,6 +152,12 @@ def build_workflow_graph(
             duration,
             len(decomposition.subquestions),
         )
+        for index, subquestion in enumerate(decomposition.subquestions, start=1):
+            RUN_LOGGER.info(
+                "Decomposed subquestion %d: %s",
+                index,
+                subquestion,
+            )
         return {
             "subquestions": decomposition.subquestions,
             "subquestion_index": 0,

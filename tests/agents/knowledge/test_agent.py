@@ -1,5 +1,6 @@
 from collections import defaultdict
 from itertools import count
+import logging
 
 import httpx
 import pytest
@@ -620,7 +621,10 @@ def test_agent_stops_after_five_searches_and_returns_partial_answer():
     assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
 
 
-def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer():
+def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer(
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger=workflow_graph.RUN_LOGGER.name)
     model = ScriptedModel(
         {
             QueryDecomposition: [
@@ -675,6 +679,12 @@ def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer():
     )
     assert "Current subquestion: Why was that provider selected?" in str(
         research_calls[1][1].content
+    )
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Decomposed subquestion 1: Which provider is used?" in messages
+    assert (
+        "Decomposed subquestion 2: Why was that provider selected?"
+        in messages
     )
 
 
