@@ -73,7 +73,8 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
     )
     config = object()
     runtime = FakeRuntime()
-    agent_model = object()
+    answer_model = object()
+    orchestration_model = object()
     agent = FakeAgent()
     logger = Mock()
 
@@ -96,7 +97,12 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
     monkeypatch.setattr(
         main_module,
         "create_azure_openai_agent_model",
-        Mock(return_value=agent_model),
+        Mock(return_value=answer_model),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "create_azure_openai_fast_agent_model",
+        Mock(return_value=orchestration_model),
     )
     monkeypatch.setattr(
         main_module,
@@ -110,7 +116,12 @@ def test_main_runs_terminal_conversation_with_one_memory_thread(
 
     output = capsys.readouterr().out
     main_module.create_azure_openai_agent_model.assert_called_once_with(config)
-    main_module.create_knowledge_agent.assert_called_once_with(agent_model, runtime)
+    main_module.create_azure_openai_fast_agent_model.assert_called_once_with(config)
+    main_module.create_knowledge_agent.assert_called_once_with(
+        answer_model,
+        orchestration_model,
+        runtime,
+    )
     runtime.prepare_search.assert_called_once_with()
     assert agent.ask_calls == [
         ("First question", main_module.TERMINAL_THREAD_ID),

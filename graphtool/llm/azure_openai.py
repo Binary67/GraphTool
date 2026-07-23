@@ -98,8 +98,21 @@ class AzureOpenAIAudioTranscriber:
 def create_azure_openai_agent_model(
     config: AzureOpenAIConfig,
 ) -> BaseChatModel:
+    return _create_azure_openai_chat_model(config, config.agent_deployment)
+
+
+def create_azure_openai_fast_agent_model(
+    config: AzureOpenAIConfig,
+) -> BaseChatModel:
+    return _create_azure_openai_chat_model(config, config.fast_deployment)
+
+
+def _create_azure_openai_chat_model(
+    config: AzureOpenAIConfig,
+    deployment: str,
+) -> BaseChatModel:
     return ChatOpenAI(
-        model=config.agent_deployment,
+        model=deployment,
         base_url=config.endpoint,
         api_key=config.api_key,
         timeout=AGENT_REQUEST_TIMEOUT_SECONDS,

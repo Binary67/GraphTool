@@ -291,7 +291,7 @@ def test_agent_retries_answer_with_same_evidence_for_unknown_citation():
         }
     )
     runtime = FakeRuntime([_result("GraphTool capabilities")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What does GraphTool do?", thread_id="thread-1")
 
@@ -327,7 +327,7 @@ def test_agent_does_not_retry_answer_when_all_citations_are_valid():
         }
     )
     runtime = FakeRuntime([_result("GraphTool capabilities")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What does GraphTool do?", thread_id="thread-1")
 
@@ -341,6 +341,43 @@ def test_agent_does_not_retry_answer_when_all_citations_are_valid():
     assert response.search_count == 1
     assert runtime.search_calls == ["GraphTool capabilities"]
     assert len(model.calls[FinalAnswerDraft]) == 1
+
+
+def test_agent_uses_fast_model_only_for_orchestration_stages():
+    orchestration_model = ScriptedModel(
+        {
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
+        }
+    )
+    answer_model = ScriptedModel(
+        {
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="GraphTool builds a knowledge graph.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime([_result("GraphTool capabilities")])
+    agent = create_knowledge_agent(
+        answer_model,
+        orchestration_model,
+        runtime,
+    )
+
+    response = agent.ask("What does GraphTool do?", thread_id="thread-1")
+
+    assert response.status == "complete"
+    assert len(orchestration_model.calls[QueryDecomposition]) == 1
+    assert len(orchestration_model.calls[ToolModelResponse]) == 1
+    assert orchestration_model.calls[SufficiencyDecision] == []
+    assert orchestration_model.calls[FinalAnswerDraft] == []
+    assert answer_model.calls[QueryDecomposition] == []
+    assert answer_model.calls[ToolModelResponse] == []
+    assert len(answer_model.calls[SufficiencyDecision]) == 1
+    assert len(answer_model.calls[FinalAnswerDraft]) == 1
 
 
 def test_agent_fails_after_retry_repeats_unknown_citation():
@@ -361,7 +398,7 @@ def test_agent_fails_after_retry_repeats_unknown_citation():
         }
     )
     runtime = FakeRuntime([_result("GraphTool capabilities")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     with pytest.raises(
         RuntimeError,
@@ -401,7 +438,7 @@ def test_agent_reformulates_search_after_insufficient_evidence():
             _result("Azure OpenAI decision rationale", page=2),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Why do we use Azure OpenAI?", thread_id="thread-1")
 
@@ -443,7 +480,7 @@ def test_agent_corrects_missing_follow_up_tool_call():
             _result("Azure OpenAI decision rationale", page=2),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Why do we use Azure OpenAI?", thread_id="thread-1")
 
@@ -488,7 +525,7 @@ def test_agent_returns_partial_evidence_when_follow_up_research_times_out():
         }
     )
     runtime = FakeRuntime([_result("Azure OpenAI usage", page=1)])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Why do we use Azure OpenAI?", thread_id="thread-1")
 
@@ -535,7 +572,7 @@ def test_agent_retrieves_allowed_chunk_neighborhood_as_cited_evidence():
             ("docs/guide.md", "guide-0001"): (previous, current, next_chunk)
         },
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask(
         "What is the complete deployment procedure?",
@@ -587,7 +624,7 @@ def test_agent_rejects_neighborhood_that_was_not_returned_by_search():
         }
     )
     runtime = FakeRuntime([_result("GraphTool provider")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Which provider is used?", thread_id="thread-1")
 
@@ -624,7 +661,7 @@ def test_agent_stops_after_two_searches_without_progress(caplog):
     runtime = FakeRuntime(
         [_result(f"query {index}", page=index) for index in range(1, 3)]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What was the final decision?", thread_id="thread-1")
 
@@ -677,7 +714,7 @@ def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer(
             _result("GraphTool provider rationale", page=2),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask(
         "Which provider is used and why was it selected?",
@@ -757,7 +794,7 @@ def test_agent_deduplicates_and_scopes_evidence_by_subquestion():
             ),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask(
         "Which provider is used and why?",
@@ -818,7 +855,7 @@ def test_agent_continues_when_missing_information_changes():
             _result("decision approver", page=3),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What was decided?", thread_id="thread-1")
 
@@ -884,7 +921,7 @@ def test_agent_stops_at_three_retrievals_when_each_adds_evidence(caplog):
             result_with_two_chunks("query 3", 5),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What was the final decision?", thread_id="thread-1")
 
@@ -931,7 +968,7 @@ def test_five_subquestions_each_stop_after_two_retrievals_without_progress():
             for index, query in enumerate(queries, start=1)
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask(
         "Answer all five parts.",
@@ -966,7 +1003,7 @@ def test_agent_discloses_best_effort_answer_after_two_empty_searches():
     runtime = FakeRuntime(
         [_empty_result(f"query {index}") for index in range(1, 3)]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("What happened?", thread_id="thread-1")
 
@@ -1007,7 +1044,7 @@ def test_evaluator_prevents_substantive_response_without_evidence():
         }
     )
     runtime = FakeRuntime([_result("GraphTool provider")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Which provider does GraphTool use?", thread_id="thread-1")
 
@@ -1028,7 +1065,7 @@ def test_agent_allows_evaluator_approved_conversation_without_search():
         }
     )
     runtime = FakeRuntime([])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     response = agent.ask("Hello", thread_id="thread-1")
 
@@ -1053,7 +1090,7 @@ def test_in_memory_threads_retain_only_their_own_conversation(caplog):
         }
     )
     runtime = FakeRuntime([])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     first = agent.ask("Hello", thread_id="thread-a")
     follow_up = agent.ask("Thanks", thread_id="thread-a")
@@ -1098,7 +1135,7 @@ def test_search_budget_resets_for_each_turn_in_the_same_thread():
             _result("follow-up query", page=2),
         ]
     )
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     first = agent.ask("First question", thread_id="thread-a")
     follow_up = agent.ask("Follow-up question", thread_id="thread-a")
@@ -1109,7 +1146,7 @@ def test_search_budget_resets_for_each_turn_in_the_same_thread():
 
 
 def test_agent_incrementally_compacts_old_conversation_messages():
-    model = ScriptedModel(
+    orchestration_model = ScriptedModel(
         {
             ConversationSummary: [
                 ConversationSummary(summary="Apollo summary version one."),
@@ -1120,6 +1157,10 @@ def test_agent_incrementally_compacts_old_conversation_messages():
                 _direct_response("Second answer"),
                 _direct_response("Third answer"),
             ],
+        }
+    )
+    answer_model = ScriptedModel(
+        {
             SufficiencyDecision: [
                 SufficiencyDecision(verdict="conversation") for _ in range(3)
             ],
@@ -1127,7 +1168,8 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     )
     runtime = FakeRuntime([])
     agent = create_knowledge_agent(
-        model,
+        answer_model,
+        orchestration_model,
         runtime,
         compaction_trigger_tokens=40,
         retained_recent_tokens=20,
@@ -1139,7 +1181,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     agent.ask(second_question, thread_id="thread-a")
     agent.ask("Thanks", thread_id="thread-a")
 
-    summary_calls = model.calls[ConversationSummary]
+    summary_calls = orchestration_model.calls[ConversationSummary]
     assert len(summary_calls) == 2
     first_summary_input = str(summary_calls[0][1].content)
     second_summary_input = str(summary_calls[1][1].content)
@@ -1149,7 +1191,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     assert second_question.strip() in second_summary_input
     assert "Second answer" in second_summary_input
 
-    research_calls = model.calls[ToolModelResponse]
+    research_calls = orchestration_model.calls[ToolModelResponse]
     second_research_text = "\n".join(
         str(message.content) for message in research_calls[1]
     )
@@ -1160,6 +1202,7 @@ def test_agent_incrementally_compacts_old_conversation_messages():
     assert first_question.strip() not in second_research_text
     assert "Apollo summary version two." in third_research_text
     assert second_question.strip() not in third_research_text
+    assert answer_model.calls[ConversationSummary] == []
 
 
 def test_completed_turn_keeps_one_clean_checkpoint():
@@ -1176,7 +1219,7 @@ def test_completed_turn_keeps_one_clean_checkpoint():
         }
     )
     runtime = FakeRuntime([_result("GraphTool capabilities")])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
     config = {"configurable": {"thread_id": "thread-a"}}
 
     response = agent.ask("What does GraphTool do?", thread_id="thread-a")
@@ -1205,7 +1248,7 @@ def test_reset_deletes_conversation_checkpoint():
         }
     )
     runtime = FakeRuntime([])
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
     config = {"configurable": {"thread_id": "thread-a"}}
     agent.ask("Hello", thread_id="thread-a")
 
@@ -1215,7 +1258,8 @@ def test_reset_deletes_conversation_checkpoint():
 
 
 def test_reset_rejects_empty_thread_id():
-    agent = create_knowledge_agent(ScriptedModel({}), FakeRuntime([]))
+    model = ScriptedModel({})
+    agent = create_knowledge_agent(model, model, FakeRuntime([]))
 
     with pytest.raises(ValueError, match="Thread ID must not be empty"):
         agent.reset(" ")
@@ -1224,7 +1268,7 @@ def test_reset_rejects_empty_thread_id():
 def test_agent_rejects_invalid_input_and_missing_knowledge_base():
     model = ScriptedModel({})
     runtime = FakeRuntime([], knowledge_base_exists=False)
-    agent = create_knowledge_agent(model, runtime)
+    agent = create_knowledge_agent(model, model, runtime)
 
     try:
         agent.ask("", thread_id="thread-1")

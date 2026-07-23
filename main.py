@@ -1,6 +1,7 @@
 from graphtool.agents import KnowledgeAgent, create_knowledge_agent
 from graphtool.llm import (
     create_azure_openai_agent_model,
+    create_azure_openai_fast_agent_model,
     load_azure_openai_config,
 )
 from graphtool.retrieval import SourceReference, format_source_reference
@@ -49,8 +50,13 @@ def main() -> None:
         config = load_azure_openai_config()
         runtime = create_runtime(config, paths=paths)
         runtime.prepare_search()
-        agent_model = create_azure_openai_agent_model(config)
-        agent = create_knowledge_agent(agent_model, runtime)
+        answer_model = create_azure_openai_agent_model(config)
+        orchestration_model = create_azure_openai_fast_agent_model(config)
+        agent = create_knowledge_agent(
+            answer_model,
+            orchestration_model,
+            runtime,
+        )
         _run_conversation(agent)
 
         logger.info("Finished GraphTool agent")

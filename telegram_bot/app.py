@@ -5,6 +5,7 @@ from graphtool.llm import (
     AGENT_MAX_RETRIES,
     AGENT_REQUEST_TIMEOUT_SECONDS,
     create_azure_openai_agent_model,
+    create_azure_openai_fast_agent_model,
     load_azure_openai_config,
 )
 from graphtool.run_logging import configure_run_logger
@@ -42,8 +43,13 @@ def run_telegram_bot() -> None:
         azure_config = load_azure_openai_config()
         runtime = create_runtime(azure_config, paths=paths)
         runtime.prepare_search()
-        model = create_azure_openai_agent_model(azure_config)
-        agent = create_knowledge_agent(model, runtime)
+        answer_model = create_azure_openai_agent_model(azure_config)
+        orchestration_model = create_azure_openai_fast_agent_model(azure_config)
+        agent = create_knowledge_agent(
+            answer_model,
+            orchestration_model,
+            runtime,
+        )
         application = create_telegram_application(agent, telegram_config)
         application.run_polling()
     except Exception:

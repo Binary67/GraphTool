@@ -100,7 +100,8 @@ NO_EVIDENCE_DISCLOSURE = (
 
 
 def build_workflow_graph(
-    model: BaseChatModel,
+    answer_model: BaseChatModel,
+    orchestration_model: BaseChatModel,
     runtime: GraphToolRuntime,
     checkpointer: InMemorySaver,
     *,
@@ -108,11 +109,18 @@ def build_workflow_graph(
     retained_recent_tokens: int,
 ):
     tools = create_knowledge_tools(runtime)
-    summary_model = model.with_structured_output(ConversationSummary)
-    decomposition_model = model.with_structured_output(QueryDecomposition)
-    research_model = model.bind_tools(tools, parallel_tool_calls=False)
-    evaluator_model = model.with_structured_output(SufficiencyDecision)
-    answer_model = model.with_structured_output(FinalAnswerDraft)
+    summary_model = orchestration_model.with_structured_output(
+        ConversationSummary
+    )
+    decomposition_model = orchestration_model.with_structured_output(
+        QueryDecomposition
+    )
+    research_model = orchestration_model.bind_tools(
+        tools,
+        parallel_tool_calls=False,
+    )
+    evaluator_model = answer_model.with_structured_output(SufficiencyDecision)
+    answer_draft_model = answer_model.with_structured_output(FinalAnswerDraft)
 
     def compact(state: AgentState) -> dict:
         summary = state.get("conversation_summary", "")
@@ -488,7 +496,7 @@ def build_workflow_graph(
             HumanMessage(content=prompt_text),
         ]
         answer_result, _ = _invoke_model(
-            answer_model,
+            answer_draft_model,
             answer_messages,
             stage="answer generation",
         )
@@ -519,7 +527,7 @@ def build_workflow_graph(
                 HumanMessage(content=prompt_text),
             ]
             retry_result, _ = _invoke_model(
-                answer_model,
+                answer_draft_model,
                 retry_messages,
                 stage="answer citation retry",
             )

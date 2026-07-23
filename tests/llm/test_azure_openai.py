@@ -6,6 +6,7 @@ from graphtool.llm.azure_openai import (
     AzureOpenAIAudioTranscriber,
     AzureOpenAIClient,
     create_azure_openai_agent_model,
+    create_azure_openai_fast_agent_model,
 )
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.llm.types import LLMImageContent, LLMMessage, LLMTextContent
@@ -131,6 +132,30 @@ def test_constructs_agent_model_with_dedicated_deployment(monkeypatch):
     assert calls == [
         {
             "model": "agent-deployment",
+            "base_url": config.endpoint,
+            "api_key": config.api_key,
+            "timeout": AGENT_REQUEST_TIMEOUT_SECONDS,
+            "max_retries": AGENT_MAX_RETRIES,
+        }
+    ]
+
+
+def test_constructs_fast_agent_model_with_fast_deployment(monkeypatch):
+    calls = []
+
+    def fake_chat_openai(**kwargs):
+        calls.append(kwargs)
+        return "fast-agent-model"
+
+    monkeypatch.setattr("graphtool.llm.azure_openai.ChatOpenAI", fake_chat_openai)
+    config = _config()
+
+    model = create_azure_openai_fast_agent_model(config)
+
+    assert model == "fast-agent-model"
+    assert calls == [
+        {
+            "model": "fast-deployment",
             "base_url": config.endpoint,
             "api_key": config.api_key,
             "timeout": AGENT_REQUEST_TIMEOUT_SECONDS,

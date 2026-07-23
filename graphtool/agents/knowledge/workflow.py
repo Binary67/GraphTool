@@ -18,7 +18,8 @@ RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 class KnowledgeAgent:
     def __init__(
         self,
-        model: BaseChatModel,
+        answer_model: BaseChatModel,
+        orchestration_model: BaseChatModel,
         runtime: GraphToolRuntime,
         *,
         compaction_trigger_tokens: int = DEFAULT_COMPACTION_TRIGGER_TOKENS,
@@ -36,7 +37,8 @@ class KnowledgeAgent:
         self._runtime = runtime
         self._checkpointer = InMemorySaver()
         self._graph = build_workflow_graph(
-            model,
+            answer_model,
+            orchestration_model,
             runtime,
             self._checkpointer,
             compaction_trigger_tokens=compaction_trigger_tokens,
@@ -109,14 +111,16 @@ class KnowledgeAgent:
 
 
 def create_knowledge_agent(
-    model: BaseChatModel,
+    answer_model: BaseChatModel,
+    orchestration_model: BaseChatModel,
     runtime: GraphToolRuntime,
     *,
     compaction_trigger_tokens: int = DEFAULT_COMPACTION_TRIGGER_TOKENS,
     retained_recent_tokens: int = DEFAULT_RETAINED_RECENT_TOKENS,
 ) -> KnowledgeAgent:
     return KnowledgeAgent(
-        model,
+        answer_model,
+        orchestration_model,
         runtime,
         compaction_trigger_tokens=compaction_trigger_tokens,
         retained_recent_tokens=retained_recent_tokens,
