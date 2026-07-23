@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
 from graphtool.retrieval import SourceReference
@@ -26,6 +26,32 @@ class ConversationSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=1, max_length=8_000, pattern=r"\S")
+
+
+class QueryDecomposition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subquestions: list[str] = Field(min_length=1, max_length=5)
+
+    @field_validator("subquestions")
+    @classmethod
+    def normalize_subquestions(cls, values: list[str]) -> list[str]:
+        normalized = []
+        for value in values:
+            question = value.strip()
+            if question and question not in normalized:
+                normalized.append(question)
+        if not normalized:
+            raise ValueError("At least one non-empty subquestion is required.")
+        return normalized
+
+
+class SubquestionOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str
+    verdict: Literal["sufficient", "insufficient"]
+    missing_information: str = ""
 
 
 class EvidenceReference(BaseModel):
@@ -67,6 +93,9 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_summary: str
     question: str
+    subquestions: list[str]
+    subquestion_index: int
+    subquestion_outcomes: list[SubquestionOutcome]
     evidence: list[EvidenceRecord]
     references: list[EvidenceReference]
     search_count: int

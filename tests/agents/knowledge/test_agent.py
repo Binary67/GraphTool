@@ -12,6 +12,7 @@ from graphtool.agents.knowledge.prompts import NO_EVIDENCE_ANSWER_SYSTEM_PROMPT
 from graphtool.agents.knowledge.state import (
     ConversationSummary,
     FinalAnswerDraft,
+    QueryDecomposition,
     SufficiencyDecision,
 )
 from graphtool.chunking.types import Chunk
@@ -32,6 +33,12 @@ class ScriptedRunnable:
     def invoke(self, messages):
         self._calls[self._schema].append(list(messages))
         if not self._responses[self._schema]:
+            if self._schema is QueryDecomposition:
+                question = str(messages[-1].content).split(
+                    "Question to decompose:\n",
+                    maxsplit=1,
+                )[-1]
+                return QueryDecomposition(subquestions=[question])
             raise AssertionError(f"No scripted response for {self._schema.__name__}")
         response = self._responses[self._schema].pop(0)
         if isinstance(response, Exception):
@@ -611,6 +618,113 @@ def test_agent_stops_after_five_searches_and_returns_partial_answer():
     assert response.status == "partial"
     assert response.search_count == 5
     assert runtime.search_calls == [f"query {index}" for index in range(1, 6)]
+
+
+def test_agent_researches_each_decomposed_subquestion_and_synthesizes_answer():
+    model = ScriptedModel(
+        {
+            QueryDecomposition: [
+                QueryDecomposition(
+                    subquestions=[
+                        "Which provider is used?",
+                        "Why was that provider selected?",
+                    ]
+                )
+            ],
+            ToolModelResponse: [
+                _search_call("GraphTool provider"),
+                _search_call("GraphTool provider rationale"),
+            ],
+            SufficiencyDecision: [
+                SufficiencyDecision(verdict="sufficient"),
+                SufficiencyDecision(verdict="sufficient"),
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer=(
+                        "GraphTool uses Azure OpenAI because it supports "
+                        "structured output."
+                    ),
+                    cited_reference_ids=["S1", "S2"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result("GraphTool provider", page=1),
+            _result("GraphTool provider rationale", page=2),
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask(
+        "Which provider is used and why was it selected?",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "complete"
+    assert response.search_count == 2
+    assert runtime.search_calls == [
+        "GraphTool provider",
+        "GraphTool provider rationale",
+    ]
+    research_calls = model.calls[ToolModelResponse]
+    assert "Current subquestion: Which provider is used?" in str(
+        research_calls[0][1].content
+    )
+    assert "Current subquestion: Why was that provider selected?" in str(
+        research_calls[1][1].content
+    )
+
+
+def test_five_subquestions_each_receive_five_retrievals():
+    subquestions = [f"Subquestion {index}?" for index in range(1, 6)]
+    queries = [
+        f"subquestion {subquestion_index} query {retrieval_index}"
+        for subquestion_index in range(1, 6)
+        for retrieval_index in range(1, 6)
+    ]
+    model = ScriptedModel(
+        {
+            QueryDecomposition: [
+                QueryDecomposition(subquestions=subquestions)
+            ],
+            ToolModelResponse: [_search_call(query) for query in queries],
+            SufficiencyDecision: [
+                SufficiencyDecision(
+                    verdict="insufficient",
+                    missing_information="The answer is missing.",
+                )
+                for _ in queries
+            ],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The questions could not be fully answered.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [
+            _result(query, page=index)
+            for index, query in enumerate(queries, start=1)
+        ]
+    )
+    agent = create_knowledge_agent(model, runtime)
+
+    response = agent.ask(
+        "Answer all five parts.",
+        thread_id="thread-1",
+    )
+
+    assert response.status == "partial"
+    assert response.search_count == 25
+    assert runtime.search_calls == queries
+    answer_prompt = str(model.calls[FinalAnswerDraft][0][1].content)
+    assert "Subquestion 1?: insufficient" in answer_prompt
+    assert "Subquestion 5?: insufficient" in answer_prompt
 
 
 def test_agent_discloses_best_effort_answer_after_five_empty_searches():

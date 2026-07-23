@@ -59,12 +59,15 @@ class KnowledgeAgent:
 
         config = {
             "configurable": {"thread_id": normalized_thread_id},
-            "recursion_limit": 50,
+            "recursion_limit": 150,
         }
         result = self._graph.invoke(
             {
                 "messages": [HumanMessage(content=normalized_question)],
                 "question": normalized_question,
+                "subquestions": [],
+                "subquestion_index": 0,
+                "subquestion_outcomes": [],
                 "evidence": [],
                 "references": [],
                 "search_count": 0,

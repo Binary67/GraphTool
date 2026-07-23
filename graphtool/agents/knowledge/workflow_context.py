@@ -24,6 +24,7 @@ def research_context(state: AgentState) -> str:
         "Conversation summary (context only, not evidence):\n"
         f"{state.get('conversation_summary') or '[None]'}\n\n"
         f"Original question: {state['question']}\n"
+        f"Current subquestion: {_current_question(state)}\n"
         f"Prior search queries: {prior_queries or ['None']}\n"
         f"Available chunks: {available_chunks or ['None']}\n"
         f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
@@ -33,7 +34,8 @@ def research_context(state: AgentState) -> str:
 
 def evaluation_text(state: AgentState) -> str:
     return (
-        f"Question:\n{state['question']}\n\n"
+        f"Original question:\n{state['question']}\n\n"
+        f"Subquestion to evaluate:\n{_current_question(state)}\n\n"
         f"Conversation:\n{_conversation_context_text(state)}\n\n"
         "Proposed conversational response:\n"
         f"{state.get('direct_response') or '[None]'}\n\n"
@@ -42,17 +44,30 @@ def evaluation_text(state: AgentState) -> str:
 
 
 def answer_text(state: AgentState, *, partial: bool) -> str:
-    missing_information = (
-        state["evaluation"].missing_information
-        if state.get("evaluation") is not None
-        else ""
+    outcomes = "\n".join(
+        (
+            f"- {outcome.question}: {outcome.verdict}"
+            + (
+                f" ({outcome.missing_information})"
+                if outcome.missing_information
+                else ""
+            )
+        )
+        for outcome in state["subquestion_outcomes"]
     )
     return (
         f"Question:\n{state['question']}\n\n"
         f"Conversation:\n{_conversation_context_text(state)}\n\n"
         f"Answer status: {'partial' if partial else 'complete'}\n"
-        f"Unresolved information: {missing_information or '[None]'}\n\n"
+        f"Subquestion outcomes:\n{outcomes or '[None]'}\n\n"
         f"Retrieved evidence:\n{_evidence_text(state)}"
+    )
+
+
+def decomposition_text(state: AgentState) -> str:
+    return (
+        f"Conversation:\n{_conversation_context_text(state)}\n\n"
+        f"Question to decompose:\n{state['question']}"
     )
 
 
@@ -151,3 +166,7 @@ def _reference_key(
 
 def _format_reference(reference: SourceReference) -> str:
     return format_source_reference(reference)
+
+
+def _current_question(state: AgentState) -> str:
+    return state["subquestions"][state["subquestion_index"]]

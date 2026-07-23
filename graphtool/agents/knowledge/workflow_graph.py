@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from graphtool.agents.knowledge.prompts import (
     ANSWER_SYSTEM_PROMPT,
+    DECOMPOSITION_SYSTEM_PROMPT,
     EVALUATOR_SYSTEM_PROMPT,
     NO_EVIDENCE_ANSWER_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
@@ -33,6 +34,8 @@ from graphtool.agents.knowledge.state import (
     ConversationSummary,
     EvidenceRecord,
     FinalAnswerDraft,
+    QueryDecomposition,
+    SubquestionOutcome,
     SufficiencyDecision,
 )
 from graphtool.agents.knowledge.tools import (
@@ -44,6 +47,7 @@ from graphtool.agents.knowledge.tools import (
 from graphtool.agents.knowledge.workflow_context import (
     answer_text,
     conversation_token_count,
+    decomposition_text,
     evaluation_text,
     merge_references,
     research_context,
@@ -53,7 +57,7 @@ from graphtool.agents.knowledge.workflow_context import (
 from graphtool.run_logging import LOGGER_NAME
 from graphtool.runtime import GraphToolRuntime
 
-MAX_RETRIEVALS_PER_TURN = 5
+MAX_RETRIEVALS_PER_SUBQUESTION = 5
 RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 RESEARCH_TOOL_CORRECTION = (
     "Your previous response did not call a retrieval tool. The available "
@@ -77,6 +81,7 @@ def build_workflow_graph(
 ):
     tools = create_knowledge_tools(runtime)
     summary_model = model.with_structured_output(ConversationSummary)
+    decomposition_model = model.with_structured_output(QueryDecomposition)
     research_model = model.bind_tools(tools, parallel_tool_calls=False)
     evaluator_model = model.with_structured_output(SufficiencyDecision)
     answer_model = model.with_structured_output(FinalAnswerDraft)
@@ -130,6 +135,27 @@ def build_workflow_graph(
                 for message in messages_to_summarize
                 if message.id is not None
             ],
+        }
+
+    def decompose(state: AgentState) -> dict:
+        result, duration = _invoke_model(
+            decomposition_model,
+            [
+                SystemMessage(content=DECOMPOSITION_SYSTEM_PROMPT),
+                HumanMessage(content=decomposition_text(state)),
+            ],
+            stage="question decomposition",
+        )
+        decomposition = _validated_output(QueryDecomposition, result)
+        RUN_LOGGER.info(
+            "Question decomposition completed in %.2fs: subquestions=%d",
+            duration,
+            len(decomposition.subquestions),
+        )
+        return {
+            "subquestions": decomposition.subquestions,
+            "subquestion_index": 0,
+            "subquestion_outcomes": [],
         }
 
     def research(state: AgentState) -> dict:
@@ -337,11 +363,33 @@ def build_workflow_graph(
             )
         return {"evaluation": decision}
 
+    def complete_subquestion(state: AgentState) -> dict:
+        evaluation = state["evaluation"]
+        if evaluation is None or evaluation.verdict == "conversation":
+            raise RuntimeError("Subquestion evaluation is not complete.")
+        outcome = SubquestionOutcome(
+            question=state["subquestions"][state["subquestion_index"]],
+            verdict=evaluation.verdict,
+            missing_information=evaluation.missing_information,
+        )
+        return {"subquestion_outcomes": [*state["subquestion_outcomes"], outcome]}
+
+    def advance_subquestion(state: AgentState) -> dict:
+        return {
+            "subquestion_index": state["subquestion_index"] + 1,
+            "retrieval_count": 0,
+            "allowed_chunks": [],
+            "used_neighborhoods": [],
+            "research_action": None,
+            "direct_response": None,
+            "evaluation": None,
+        }
+
     def answer(state: AgentState) -> dict:
         answer_started_at = perf_counter()
-        partial = (
-            state["evaluation"] is None
-            or state["evaluation"].verdict != "sufficient"
+        partial = any(
+            outcome.verdict == "insufficient"
+            for outcome in state["subquestion_outcomes"]
         )
         no_evidence = partial and not state["references"]
         system_prompt = (
@@ -455,6 +503,9 @@ def build_workflow_graph(
                 for message_id in state["tool_message_ids"]
             ],
             "question": "",
+            "subquestions": [],
+            "subquestion_index": 0,
+            "subquestion_outcomes": [],
             "evidence": [],
             "references": [],
             "search_count": 0,
@@ -469,19 +520,27 @@ def build_workflow_graph(
 
     builder = StateGraph(AgentState)
     builder.add_node("compact", compact)
+    builder.add_node("decompose", decompose)
     builder.add_node("research", research)
     builder.add_node("tools", ToolNode(tools))
     builder.add_node("record_tool_results", record_tool_results)
     builder.add_node("evaluate", evaluate)
+    builder.add_node("complete_subquestion", complete_subquestion)
+    builder.add_node("advance_subquestion", advance_subquestion)
     builder.add_node("answer", answer)
     builder.add_node("finish_conversation", finish_conversation)
     builder.add_node("cleanup", cleanup)
     builder.add_edge(START, "compact")
-    builder.add_edge("compact", "research")
+    builder.add_edge("compact", "decompose")
+    builder.add_edge("decompose", "research")
     builder.add_conditional_edges(
         "research",
         _route_research,
-        {"tools": "tools", "evaluate": "evaluate", "answer": "answer"},
+        {
+            "tools": "tools",
+            "evaluate": "evaluate",
+            "complete_subquestion": "complete_subquestion",
+        },
     )
     builder.add_edge("tools", "record_tool_results")
     builder.add_edge("record_tool_results", "evaluate")
@@ -489,11 +548,17 @@ def build_workflow_graph(
         "evaluate",
         _route_evaluation,
         {
-            "answer": "answer",
             "finish_conversation": "finish_conversation",
             "research": "research",
+            "complete_subquestion": "complete_subquestion",
         },
     )
+    builder.add_conditional_edges(
+        "complete_subquestion",
+        _route_completed_subquestion,
+        {"advance_subquestion": "advance_subquestion", "answer": "answer"},
+    )
+    builder.add_edge("advance_subquestion", "research")
     builder.add_edge("answer", "cleanup")
     builder.add_edge("finish_conversation", "cleanup")
     builder.add_edge("cleanup", END)
@@ -506,7 +571,7 @@ def _route_research(state: AgentState) -> str:
     if state.get("research_action") == "respond":
         return "evaluate"
     if state.get("research_action") == "answer":
-        return "answer"
+        return "complete_subquestion"
     raise RuntimeError("Research action is missing.")
 
 
@@ -518,10 +583,16 @@ def _route_evaluation(state: AgentState) -> str:
         return "finish_conversation"
     if (
         evaluation.verdict == "sufficient"
-        or state["retrieval_count"] >= MAX_RETRIEVALS_PER_TURN
+        or state["retrieval_count"] >= MAX_RETRIEVALS_PER_SUBQUESTION
     ):
-        return "answer"
+        return "complete_subquestion"
     return "research"
+
+
+def _route_completed_subquestion(state: AgentState) -> str:
+    if state["subquestion_index"] + 1 < len(state["subquestions"]):
+        return "advance_subquestion"
+    return "answer"
 
 
 def _log_tool_selection(tool_call: dict) -> None:

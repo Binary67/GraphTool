@@ -116,8 +116,9 @@ The agent binds two read-only tools: `search_knowledge_base` searches document
 chunks and knowledge-graph paths, while `get_chunk_neighborhood` retrieves the
 previous, current, and next chunks around a search result when adjacent context is
 needed. Neighborhood lookup accepts only chunks returned by an earlier search in
-the same turn. The agent makes up to five retrieval tool calls per question and
-returns `status="partial"` when the available evidence remains incomplete.
+the same subquestion. The agent decomposes compound questions into at most five
+non-overlapping subquestions and makes up to five retrieval tool calls for each
+one. It returns `status="partial"` when the available evidence remains incomplete.
 
 ## Telegram bot
 

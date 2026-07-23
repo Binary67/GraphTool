@@ -1,5 +1,21 @@
+DECOMPOSITION_SYSTEM_PROMPT = """\
+Decompose the user's question into the smallest useful set of retrieval
+subquestions.
+
+Return the original question unchanged as the only subquestion when it has one
+research objective or is conversational. Split a complex or multi-part question
+only when distinct facts require separate retrieval. Each subquestion must be
+standalone, non-overlapping, and necessary to answer the original question. Do
+not create alternate phrasings, split reasoning steps that the same evidence can
+support, or produce more than five subquestions.
+"""
+
+
 RESEARCH_SYSTEM_PROMPT = """\
 You control research for a read-only knowledge-base assistant.
+
+Research only the current subquestion identified in the supplied research
+context. Use the original question only to understand that subquestion.
 
 For a greeting, thanks, or conversational acknowledgement that needs no factual
 answer, respond briefly without calling a tool. For every substantive question,
