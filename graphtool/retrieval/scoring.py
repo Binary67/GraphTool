@@ -34,6 +34,22 @@ def normalize_scores(scores: Mapping[str, float]) -> dict[str, float]:
     }
 
 
+def min_max_normalize_scores(scores: Mapping[str, float]) -> dict[str, float]:
+    """Stretch scores across [0, 1]. Unlike normalize_scores, this suits
+    cosine similarities, whose high floor leaves divide-by-max scores
+    compressed near 1.0."""
+    if not scores:
+        return {}
+    min_score = min(scores.values())
+    max_score = max(scores.values())
+    if max_score == min_score:
+        return {item_id: 1.0 for item_id in scores}
+    return {
+        item_id: (score - min_score) / (max_score - min_score)
+        for item_id, score in scores.items()
+    }
+
+
 def cosine_similarity(
     left: Sequence[float],
     right: Sequence[float],
@@ -47,3 +63,17 @@ def cosine_similarity(
     return sum(
         a * b for a, b in zip(left, right, strict=True)
     ) / (left_norm * right_norm)
+
+
+def semantic_similarity_scores(
+    query_vector: Sequence[float] | None,
+    vectors: Mapping[str, Sequence[float]],
+) -> dict[str, float]:
+    if query_vector is None:
+        return {}
+    return min_max_normalize_scores(
+        {
+            item_id: cosine_similarity(query_vector, vector)
+            for item_id, vector in vectors.items()
+        }
+    )

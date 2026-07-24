@@ -22,8 +22,7 @@ from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.retrieval.scoring import (
     bm25_index,
     bm25_scores,
-    cosine_similarity,
-    normalize_scores,
+    semantic_similarity_scores,
 )
 from graphtool.retrieval.types import RetrievalResult
 
@@ -154,13 +153,9 @@ def _rank_chunks(
     alias_scores = bm25_scores(query, prepared.alias_index)
     content_scores = bm25_scores(query, prepared.content_index)
     metadata_scores = bm25_scores(query, prepared.metadata_index)
-    semantic_scores = normalize_scores(
-        {
-            chunk_id: cosine_similarity(query_vector, vector)
-            for chunk_id, vector in prepared.chunk_vectors.items()
-        }
-        if query_vector is not None
-        else {}
+    semantic_scores = semantic_similarity_scores(
+        query_vector,
+        prepared.chunk_vectors,
     )
 
     ranked = []

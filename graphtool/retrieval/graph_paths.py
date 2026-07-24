@@ -8,8 +8,8 @@ from graphtool.retrieval.bm25 import BM25Document, BM25Index, tokenize
 from graphtool.retrieval.context import unique_ordered
 from graphtool.retrieval.scoring import (
     bm25_scores,
-    cosine_similarity,
     normalize_scores,
+    semantic_similarity_scores,
 )
 from graphtool.retrieval.types import GraphPathHit
 
@@ -36,7 +36,7 @@ def seed_node_scores(
 ) -> dict[str, float]:
     label_scores = bm25_scores(query, label_index)
     metadata_scores = bm25_scores(query, metadata_index)
-    semantic_scores = _semantic_node_scores(query_vector, node_vectors)
+    semantic_scores = semantic_similarity_scores(query_vector, node_vectors)
     return normalize_scores(
         {
             node.id: (
@@ -269,20 +269,6 @@ def rank_evidence_chunks(
     ]
     ranked.sort(key=lambda item: (-item[1], item[0].index, item[0].id))
     return ranked
-
-
-def _semantic_node_scores(
-    query_vector: Sequence[float] | None,
-    node_vectors: Mapping[str, Sequence[float]],
-) -> dict[str, float]:
-    if query_vector is None:
-        return {}
-    return normalize_scores(
-        {
-            node_id: cosine_similarity(query_vector, vector)
-            for node_id, vector in node_vectors.items()
-        }
-    )
 
 
 def _candidate_path_text(
