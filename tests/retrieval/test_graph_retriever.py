@@ -1,9 +1,10 @@
 import pytest
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.embedding_store import JsonEmbeddingStore, NodeEmbeddingRecord
+from graphtool.graph.embedding_store import NodeEmbeddingRecord, SqliteEmbeddingStore
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.retrieval.graph_retriever import retrieve_graph_context
+from graphtool.storage import open_database
 
 
 class FakeEmbeddingClient:
@@ -133,7 +134,7 @@ def test_graph_search_returns_relevant_two_hop_path_and_evidence():
 
 
 def test_graph_search_uses_cached_node_embeddings_for_semantic_seed(tmp_path):
-    store = JsonEmbeddingStore(tmp_path / "node_embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "node_embeddings.db"))
     store.save(
         {
             "alpha": NodeEmbeddingRecord(
@@ -162,7 +163,7 @@ def test_graph_search_uses_cached_node_embeddings_for_semantic_seed(tmp_path):
 
 
 def test_graph_search_ignores_cached_embeddings_from_another_model(tmp_path):
-    store = JsonEmbeddingStore(tmp_path / "node_embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "node_embeddings.db"))
     store.save(
         {
             "alpha": NodeEmbeddingRecord(

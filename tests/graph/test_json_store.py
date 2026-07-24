@@ -1,14 +1,17 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from graphtool.graph.embedding_store import (
-    JsonEmbeddingStore,
-    JsonGraphEmbeddingStore,
     NodeEmbeddingRecord,
+    SqliteEmbeddingStore,
+    SqliteGraphEmbeddingStore,
 )
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.source import source_key
+from graphtool.storage import open_database
 
 
 def _sample_graph(source: str = "doc.md") -> KnowledgeGraph:
@@ -235,7 +238,7 @@ def test_knowledge_base_store_roundtrips_metadata_less_graph(tmp_path):
 
 
 def test_embedding_store_roundtrips_records(tmp_path):
-    store = JsonEmbeddingStore(tmp_path / "embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "embeddings.db"))
     record = NodeEmbeddingRecord(
         node_id="openai",
         embedding_model="embedding-model",
@@ -246,11 +249,23 @@ def test_embedding_store_roundtrips_records(tmp_path):
     store.save({"openai": record})
 
     assert store.exists() is True
-    assert store.load() == {"openai": record}
+    loaded = store.load()
+    assert set(loaded) == {"openai"}
+    loaded_record = loaded["openai"]
+    assert loaded_record.node_id == record.node_id
+    assert loaded_record.embedding_model == record.embedding_model
+    assert loaded_record.embedding_input_hash == record.embedding_input_hash
+    assert loaded_record.vector == pytest.approx(record.vector, abs=1e-6)
 
 
-def test_graph_embedding_store_uses_source_path(tmp_path):
-    store = JsonGraphEmbeddingStore(tmp_path)
+def test_embedding_store_exists_is_false_when_empty(tmp_path):
+    store = SqliteEmbeddingStore(open_database(tmp_path / "embeddings.db"))
+
+    assert store.exists() is False
+
+
+def test_graph_embedding_store_roundtrips_per_source(tmp_path):
+    store = SqliteGraphEmbeddingStore(open_database(tmp_path / "embeddings.db"))
     record = NodeEmbeddingRecord(
         node_id="openai",
         embedding_model="embedding-model",
@@ -261,9 +276,13 @@ def test_graph_embedding_store_uses_source_path(tmp_path):
     store.save("docs/openai.md", {"openai": record})
 
     assert store.exists("docs/openai.md") is True
-    assert store.load("docs/openai.md") == {"openai": record}
-    assert (tmp_path / f"{source_key('docs/openai.md')}.json").exists()
+    assert store.exists("docs/missing.md") is False
+    loaded = store.load("docs/openai.md")
+    assert set(loaded) == {"openai"}
+    assert loaded["openai"].node_id == record.node_id
+    assert loaded["openai"].vector == pytest.approx(record.vector, abs=1e-6)
 
     store.delete("docs/openai.md")
 
     assert store.exists("docs/openai.md") is False
+    assert store.load("docs/openai.md") == {}

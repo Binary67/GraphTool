@@ -4,8 +4,9 @@ import pytest
 
 from graphtool.chunking.types import Chunk
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
-from graphtool.retrieval import JsonChunkEmbeddingStore
+from graphtool.retrieval import SqliteChunkEmbeddingStore
 from graphtool.retrieval.retriever import retrieve_context
+from graphtool.storage import open_database
 
 
 class FakeEmbeddingClient:
@@ -301,7 +302,7 @@ def test_retrieve_context_uses_semantic_chunk_search(tmp_path):
             "Setup stalls": [1.0, 0.0],
         }
     )
-    store = JsonChunkEmbeddingStore(tmp_path / "chunk_embeddings.json")
+    store = SqliteChunkEmbeddingStore(open_database(tmp_path / "chunk_embeddings.db"))
 
     result = retrieve_context(
         "install hangs",
@@ -319,7 +320,7 @@ def test_retrieve_context_uses_semantic_chunk_search(tmp_path):
 def test_retrieve_context_reuses_and_refreshes_enriched_chunk_embedding_cache(
     tmp_path,
 ):
-    store = JsonChunkEmbeddingStore(tmp_path / "chunk_embeddings.json")
+    store = SqliteChunkEmbeddingStore(open_database(tmp_path / "chunk_embeddings.db"))
     embedding = FakeEmbeddingClient(
         {
             "install hangs": [1.0, 0.0],
@@ -423,7 +424,9 @@ def test_retrieve_context_combines_weighted_normalized_fields_and_semantic_score
         graph,
         chunks,
         embedding_client=embedding,
-        chunk_embedding_store=JsonChunkEmbeddingStore(tmp_path / "embeddings.json"),
+        chunk_embedding_store=SqliteChunkEmbeddingStore(
+            open_database(tmp_path / "embeddings.db")
+        ),
     )
 
     assert result.chunks[0].score == pytest.approx(6.0)

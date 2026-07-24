@@ -20,10 +20,11 @@ from graphtool.graph.extraction_store import (
     JsonChunkExtractionStore,
 )
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.taxonomy import JsonTaxonomySuggestionStore
+from graphtool.graph.taxonomy import SqliteTaxonomySuggestionStore
 from graphtool.graph.types import Edge, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
 from graphtool.run_logging import configure_run_logger
+from graphtool.storage import open_database
 
 T = TypeVar("T")
 
@@ -714,8 +715,9 @@ def test_extracted_node_requires_suggested_type_for_unclassified():
 
 
 def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
-    suggestions_path = tmp_path / "suggestions.json"
-    suggestion_store = JsonTaxonomySuggestionStore(suggestions_path)
+    suggestion_store = SqliteTaxonomySuggestionStore(
+        open_database(tmp_path / "suggestions.db")
+    )
     fake = FakeLLM(
         [
             _extracted_graph(
@@ -750,7 +752,6 @@ def test_generate_knowledge_graph_records_taxonomy_suggestions(tmp_path):
     assert records[0].source == "doc.md"
     assert records[0].chunk_id == "doc-chunk-0000"
     assert records[0].created_at
-    assert "model" not in json.loads(suggestions_path.read_text())[0]
 
 
 def test_generate_knowledge_graph_buffers_taxonomy_suggestion_writes():

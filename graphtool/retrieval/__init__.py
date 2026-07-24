@@ -4,7 +4,7 @@ from graphtool.retrieval.bm25 import BM25Document, BM25Index
 from graphtool.retrieval.embedding_store import (
     ChunkEmbeddingRecord,
     ChunkEmbeddingStore,
-    JsonChunkEmbeddingStore,
+    SqliteChunkEmbeddingStore,
 )
 from graphtool.retrieval.references import (
     format_source_location,
@@ -25,7 +25,7 @@ __all__ = [
     "ChunkRelationship",
     "ChunkEmbeddingRecord",
     "ChunkEmbeddingStore",
-    "JsonChunkEmbeddingStore",
+    "SqliteChunkEmbeddingStore",
     "GraphPathHit",
     "format_source_location",
     "format_source_reference",

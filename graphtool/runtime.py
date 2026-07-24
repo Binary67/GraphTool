@@ -1,27 +1,28 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graphtool.chunking import JsonChunkStore
+from graphtool.chunking import SqliteChunkStore
 from graphtool.chunking.types import Chunk
 from graphtool.graph import (
     JsonChunkExtractionStore,
-    JsonEmbeddingStore,
-    JsonGraphEmbeddingStore,
     JsonGraphStore,
     JsonKnowledgeBaseStore,
-    JsonTaxonomySuggestionStore,
     KnowledgeGraph,
+    SqliteEmbeddingStore,
+    SqliteGraphEmbeddingStore,
+    SqliteTaxonomySuggestionStore,
 )
 from graphtool.llm import AzureOpenAIAudioTranscriber, AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.retrieval import (
-    JsonChunkEmbeddingStore,
     RetrievalResult,
+    SqliteChunkEmbeddingStore,
 )
 from graphtool.retrieval.hybrid_retriever import (
     PreparedHybridRetriever,
     prepare_hybrid_retriever,
 )
+from graphtool.storage import open_database
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX_LOG_FILES = 3
@@ -34,14 +35,10 @@ class GraphToolPaths:
     audio_transcriptions_dir: Path
     pdf_conversions_dir: Path
     presentation_conversions_dir: Path
-    chunks_dir: Path
     chunk_extractions_dir: Path
     graphs_dir: Path
-    graph_embeddings_dir: Path
-    chunk_embeddings_path: Path
     knowledge_base_path: Path
-    knowledge_base_embeddings_path: Path
-    taxonomy_suggestions_path: Path
+    db_path: Path
     dropped_edges_path: Path
     logs_dir: Path
     visualizations_dir: Path
@@ -52,12 +49,12 @@ class GraphToolRuntime:
     paths: GraphToolPaths
     graph_store: JsonGraphStore
     knowledge_base_store: JsonKnowledgeBaseStore
-    graph_embedding_store: JsonGraphEmbeddingStore
-    knowledge_base_embedding_store: JsonEmbeddingStore
-    taxonomy_suggestion_store: JsonTaxonomySuggestionStore
-    chunk_store: JsonChunkStore
+    graph_embedding_store: SqliteGraphEmbeddingStore
+    knowledge_base_embedding_store: SqliteEmbeddingStore
+    taxonomy_suggestion_store: SqliteTaxonomySuggestionStore
+    chunk_store: SqliteChunkStore
     chunk_extraction_store: JsonChunkExtractionStore
-    chunk_embedding_store: JsonChunkEmbeddingStore
+    chunk_embedding_store: SqliteChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
     audio_transcriber: AzureOpenAIAudioTranscriber
     _search_retriever: PreparedHybridRetriever | None = field(
@@ -101,14 +98,10 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
         audio_transcriptions_dir=data_dir / "audio_transcriptions",
         pdf_conversions_dir=data_dir / "pdf_conversions",
         presentation_conversions_dir=data_dir / "presentation_conversions",
-        chunks_dir=data_dir / "chunks",
         chunk_extractions_dir=data_dir / "chunk_extractions",
         graphs_dir=data_dir / "graphs",
-        graph_embeddings_dir=data_dir / "graph_embeddings",
-        chunk_embeddings_path=data_dir / "chunk_embeddings.json",
         knowledge_base_path=data_dir / "knowledge_base.json",
-        knowledge_base_embeddings_path=data_dir / "knowledge_base_embeddings.json",
-        taxonomy_suggestions_path=data_dir / "taxonomy_suggestions.json",
+        db_path=data_dir / "graphtool.db",
         dropped_edges_path=data_dir / "dropped_edges.jsonl",
         logs_dir=project_root / "logs",
         visualizations_dir=data_dir / "visualizations",
@@ -121,26 +114,21 @@ def create_runtime(
     paths: GraphToolPaths | None = None,
 ) -> GraphToolRuntime:
     runtime_paths = paths or default_paths()
+    conn = open_database(runtime_paths.db_path)
     return GraphToolRuntime(
         paths=runtime_paths,
         graph_store=JsonGraphStore(runtime_paths.graphs_dir),
-        knowledge_base_store=JsonKnowledgeBaseStore(runtime_paths.knowledge_base_path),
-        graph_embedding_store=JsonGraphEmbeddingStore(
-            runtime_paths.graph_embeddings_dir
+        knowledge_base_store=JsonKnowledgeBaseStore(
+            runtime_paths.knowledge_base_path
         ),
-        knowledge_base_embedding_store=JsonEmbeddingStore(
-            runtime_paths.knowledge_base_embeddings_path
-        ),
-        taxonomy_suggestion_store=JsonTaxonomySuggestionStore(
-            runtime_paths.taxonomy_suggestions_path
-        ),
-        chunk_store=JsonChunkStore(runtime_paths.chunks_dir),
+        graph_embedding_store=SqliteGraphEmbeddingStore(conn),
+        knowledge_base_embedding_store=SqliteEmbeddingStore(conn),
+        taxonomy_suggestion_store=SqliteTaxonomySuggestionStore(conn),
+        chunk_store=SqliteChunkStore(conn),
         chunk_extraction_store=JsonChunkExtractionStore(
             runtime_paths.chunk_extractions_dir
         ),
-        chunk_embedding_store=JsonChunkEmbeddingStore(
-            runtime_paths.chunk_embeddings_path
-        ),
+        chunk_embedding_store=SqliteChunkEmbeddingStore(conn),
         fast_llm=AzureOpenAIClient(
             config,
             text_deployment=config.fast_deployment,

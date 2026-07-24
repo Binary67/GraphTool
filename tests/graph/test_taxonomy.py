@@ -3,13 +3,14 @@ from datetime import datetime, timezone
 from graphtool.graph.taxonomy import (
     JsonNodeTypeRegistryStore,
     JsonTaxonomyPromotionAuditStore,
-    JsonTaxonomySuggestionStore,
+    SqliteTaxonomySuggestionStore,
     TaxonomySuggestionRecord,
     default_node_type_registry,
     evolve_taxonomy,
     promote_suggestions,
 )
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node
+from graphtool.storage import open_database
 
 
 def _record(
@@ -108,9 +109,11 @@ def test_promote_suggestions_keeps_small_suggestions_pending():
     assert result.promotions == []
 
 
-def test_evolve_taxonomy_uses_json_backed_stores(tmp_path):
+def test_evolve_taxonomy_uses_backed_stores(tmp_path):
     registry_store = JsonNodeTypeRegistryStore(tmp_path / "registry.json")
-    suggestion_store = JsonTaxonomySuggestionStore(tmp_path / "suggestions.json")
+    suggestion_store = SqliteTaxonomySuggestionStore(
+        open_database(tmp_path / "suggestions.db")
+    )
     audit_store = JsonTaxonomyPromotionAuditStore(tmp_path / "promotions.json")
     suggestion_store.append_many(
         [

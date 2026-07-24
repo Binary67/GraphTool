@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import TypeVar, cast
 
-from graphtool.graph.embedding_store import JsonEmbeddingStore, NodeEmbeddingRecord
+from graphtool.graph.embedding_store import NodeEmbeddingRecord, SqliteEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
 from graphtool.graph.resolution_embeddings import (
     embedding_input_hash,
@@ -9,6 +9,7 @@ from graphtool.graph.resolution_embeddings import (
 )
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
+from graphtool.storage import open_database
 
 T = TypeVar("T")
 
@@ -674,7 +675,7 @@ def test_resolver_prefetch_distinguishes_reused_node_ids_by_input_hash():
 
 def test_resolver_reuses_matching_cached_embeddings(tmp_path):
     embedding = FakeEmbeddingClient({"OpenAI": [1.0, 0.0]})
-    store = JsonEmbeddingStore(tmp_path / "embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "embeddings.db"))
     resolver = SemanticEntityResolver(FakeLLM(), embedding, store)
 
     resolver.combine(
@@ -711,7 +712,7 @@ def test_resolver_reuses_embedding_record_with_matching_input_hash(tmp_path):
         vector=[1.0, 0.0],
     )
     embedding = FakeEmbeddingClient()
-    store = JsonEmbeddingStore(tmp_path / "global_embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "global_embeddings.db"))
     resolver = SemanticEntityResolver(
         FakeLLM(),
         embedding,
@@ -767,7 +768,7 @@ def test_resolver_batches_uncached_candidate_embeddings():
 
 
 def test_combine_into_resolves_only_new_nodes_against_existing(tmp_path):
-    store = JsonEmbeddingStore(tmp_path / "embeddings.json")
+    store = SqliteEmbeddingStore(open_database(tmp_path / "embeddings.db"))
     existing = KnowledgeGraph(
         nodes=[
             Node(id="openai", label="OpenAI", type="Organization", chunk_ids=["c1"]),

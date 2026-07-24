@@ -3,25 +3,26 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graphtool.chunking.json_store import JsonChunkStore
+from graphtool.chunking.store import SqliteChunkStore
 from graphtool.chunking.markdown import chunk_markdown
 from graphtool.chunking.types import Chunk
 from graphtool.graph.embedding_store import (
-    JsonEmbeddingStore,
-    JsonGraphEmbeddingStore,
     NodeEmbeddingRecord,
+    SqliteEmbeddingStore,
+    SqliteGraphEmbeddingStore,
 )
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
 from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.provenance import remove_source_from_knowledge_graph
+from graphtool.graph.resolution_embeddings import EmbeddingStore
 from graphtool.graph.resolver import (
     DEFAULT_MIN_CANDIDATE_SIMILARITY,
     SemanticEntityResolver,
 )
 from graphtool.graph.taxonomy import (
-    JsonTaxonomySuggestionStore,
+    SqliteTaxonomySuggestionStore,
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import KnowledgeGraph
@@ -60,15 +61,15 @@ class _TaxonomySuggestionBuffer:
 def synchronize_documents(
     documents: Mapping[str, str],
     graph_store: JsonGraphStore,
-    chunk_store: JsonChunkStore,
+    chunk_store: SqliteChunkStore,
     llm: LLMClient,
     *,
     knowledge_base_store: JsonKnowledgeBaseStore,
-    graph_embedding_store: JsonGraphEmbeddingStore | None = None,
-    knowledge_base_embedding_store: JsonEmbeddingStore | None = None,
+    graph_embedding_store: SqliteGraphEmbeddingStore | None = None,
+    knowledge_base_embedding_store: SqliteEmbeddingStore | None = None,
     chunk_embedding_store: ChunkEmbeddingStore | None = None,
     dropped_edges_path: Path | None = None,
-    taxonomy_suggestion_store: JsonTaxonomySuggestionStore | None = None,
+    taxonomy_suggestion_store: SqliteTaxonomySuggestionStore | None = None,
     chunk_extraction_store: JsonChunkExtractionStore | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
     chunk_generation_workers: int = 4,
@@ -122,8 +123,9 @@ def synchronize_documents(
         )
         resolver = _make_semantic_resolver(
             llm,
-            graph_embedding_store,
-            source=source,
+            graph_embedding_store.for_source(source)
+            if graph_embedding_store is not None
+            else None,
             min_candidate_similarity=min_candidate_similarity,
         )
         suggestion_buffer = (
@@ -268,9 +270,8 @@ def _combine_knowledge_graphs(
 
 def _make_semantic_resolver(
     llm: LLMClient,
-    graph_embedding_store: JsonGraphEmbeddingStore | JsonEmbeddingStore | None,
+    embedding_store: EmbeddingStore | None,
     *,
-    source: str | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
     reusable_embedding_records: Sequence[NodeEmbeddingRecord] = (),
 ) -> SemanticEntityResolver | None:
@@ -279,14 +280,6 @@ def _make_semantic_resolver(
         or not hasattr(llm, "embedding_model")
     ):
         return None
-
-    embedding_store = None
-    if isinstance(graph_embedding_store, JsonGraphEmbeddingStore):
-        if source is None:
-            raise ValueError("source is required for per-document graph embeddings.")
-        embedding_store = _SourceEmbeddingStore(graph_embedding_store, source)
-    else:
-        embedding_store = graph_embedding_store
 
     return SemanticEntityResolver(
         llm,
@@ -298,7 +291,7 @@ def _make_semantic_resolver(
 
 
 def _load_document_embedding_records(
-    store: JsonGraphEmbeddingStore | None,
+    store: SqliteGraphEmbeddingStore | None,
     sources: Sequence[str],
 ) -> list[NodeEmbeddingRecord]:
     if store is None:
@@ -306,18 +299,5 @@ def _load_document_embedding_records(
     return [
         record
         for source in sources
-        if store.exists(source)
         for record in store.load(source).values()
     ]
-
-
-class _SourceEmbeddingStore:
-    def __init__(self, store: JsonGraphEmbeddingStore, source: str) -> None:
-        self._store = store
-        self._source = source
-
-    def load(self):
-        return self._store.load(self._source)
-
-    def save(self, records):
-        self._store.save(self._source, records)

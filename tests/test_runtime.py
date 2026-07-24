@@ -68,18 +68,10 @@ def test_default_paths_match_project_layout(tmp_path):
     assert paths.presentation_conversions_dir == (
         tmp_path / "data" / "presentation_conversions"
     )
-    assert paths.chunks_dir == tmp_path / "data" / "chunks"
     assert paths.chunk_extractions_dir == tmp_path / "data" / "chunk_extractions"
     assert paths.graphs_dir == tmp_path / "data" / "graphs"
-    assert paths.graph_embeddings_dir == tmp_path / "data" / "graph_embeddings"
-    assert paths.chunk_embeddings_path == tmp_path / "data" / "chunk_embeddings.json"
     assert paths.knowledge_base_path == tmp_path / "data" / "knowledge_base.json"
-    assert paths.knowledge_base_embeddings_path == (
-        tmp_path / "data" / "knowledge_base_embeddings.json"
-    )
-    assert paths.taxonomy_suggestions_path == (
-        tmp_path / "data" / "taxonomy_suggestions.json"
-    )
+    assert paths.db_path == tmp_path / "data" / "graphtool.db"
     assert paths.dropped_edges_path == tmp_path / "data" / "dropped_edges.jsonl"
     assert paths.logs_dir == tmp_path / "logs"
     assert paths.visualizations_dir == tmp_path / "data" / "visualizations"

@@ -1,8 +1,8 @@
 import pytest
 
-from graphtool.chunking.json_store import JsonChunkStore
+from graphtool.chunking.store import SqliteChunkStore
 from graphtool.chunking.types import Chunk
-from graphtool.source import source_key
+from graphtool.storage import open_database
 
 
 def _chunks() -> list[Chunk]:
@@ -31,16 +31,24 @@ def _chunks() -> list[Chunk]:
     ]
 
 
-def test_save_creates_json_file(tmp_path):
-    store = JsonChunkStore(tmp_path)
+def _store(tmp_path):
+    return SqliteChunkStore(open_database(tmp_path / "test.db"))
+
+
+def test_save_persists_chunks(tmp_path):
+    store = _store(tmp_path)
 
     store.save("doc.md", _chunks())
 
-    assert (tmp_path / f"{source_key('doc.md')}.json").exists()
+    assert [chunk.id for chunk in store.load("doc.md")] == [
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+        "doc-chunk-0002",
+    ]
 
 
 def test_load_roundtrips_saved_chunks(tmp_path):
-    store = JsonChunkStore(tmp_path)
+    store = _store(tmp_path)
     chunks = _chunks()
 
     store.save("doc.md", chunks)
@@ -49,15 +57,14 @@ def test_load_roundtrips_saved_chunks(tmp_path):
     assert loaded == chunks
 
 
-def test_load_raises_for_missing_file(tmp_path):
-    store = JsonChunkStore(tmp_path)
+def test_load_returns_empty_for_unsaved_source(tmp_path):
+    store = _store(tmp_path)
 
-    with pytest.raises(FileNotFoundError):
-        store.load("missing.md")
+    assert store.load("missing.md") == []
 
 
 def test_load_by_ids_returns_requested_order_and_filters_missing_ids(tmp_path):
-    store = JsonChunkStore(tmp_path)
+    store = _store(tmp_path)
     chunks = _chunks()
     store.save("doc.md", chunks)
 
@@ -67,6 +74,13 @@ def test_load_by_ids_returns_requested_order_and_filters_missing_ids(tmp_path):
     )
 
     assert loaded == [chunks[1], chunks[0]]
+
+
+def test_load_by_ids_returns_empty_for_empty_request(tmp_path):
+    store = _store(tmp_path)
+    store.save("doc.md", _chunks())
+
+    assert store.load_by_ids("doc.md", []) == []
 
 
 @pytest.mark.parametrize(
@@ -82,7 +96,7 @@ def test_load_neighborhood_handles_first_middle_and_last_chunks(
     chunk_id,
     expected_positions,
 ):
-    store = JsonChunkStore(tmp_path)
+    store = _store(tmp_path)
     store.save("doc.md", _chunks())
 
     neighborhood = store.load_neighborhood("doc.md", chunk_id)
@@ -105,7 +119,7 @@ def test_load_neighborhood_rejects_invalid_source_chunk_combinations(
     source,
     chunk_id,
 ):
-    store = JsonChunkStore(tmp_path)
+    store = _store(tmp_path)
     store.save("doc.md", _chunks())
     store.save("other.md", [])
 
@@ -113,19 +127,43 @@ def test_load_neighborhood_rejects_invalid_source_chunk_combinations(
         store.load_neighborhood(source, chunk_id)
 
 
-def test_save_uses_source_path_in_filename(tmp_path):
-    store = JsonChunkStore(tmp_path)
+def test_save_separates_chunks_for_distinct_sources(tmp_path):
+    store = _store(tmp_path)
 
     store.save("docs/api/guide.md", [])
-    store.save("docs/user/guide.md", [])
+    store.save("docs/user/guide.md", _chunks())
 
-    assert (tmp_path / f"{source_key('docs/api/guide.md')}.json").exists()
-    assert (tmp_path / f"{source_key('docs/user/guide.md')}.json").exists()
-    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert store.load("docs/api/guide.md") == []
+    assert [chunk.id for chunk in store.load("docs/user/guide.md")] == [
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+        "doc-chunk-0002",
+    ]
+
+
+def test_load_all_returns_chunks_across_sources(tmp_path):
+    store = _store(tmp_path)
+    store.save("docs/api/guide.md", [_chunks()[0]])
+    store.save("docs/user/guide.md", [_chunks()[1]])
+
+    loaded = store.load_all()
+
+    assert {chunk.id for chunk in loaded} == {
+        "doc-chunk-0000",
+        "doc-chunk-0001",
+    }
+
+
+def test_save_replaces_existing_chunks_for_source(tmp_path):
+    store = _store(tmp_path)
+    store.save("doc.md", _chunks())
+    store.save("doc.md", [_chunks()[0]])
+
+    assert [chunk.id for chunk in store.load("doc.md")] == ["doc-chunk-0000"]
 
 
 def test_delete_removes_saved_chunks(tmp_path):
-    store = JsonChunkStore(tmp_path)
+    store = _store(tmp_path)
     chunks = [
         Chunk(
             id="doc-chunk-0000",
@@ -138,5 +176,31 @@ def test_delete_removes_saved_chunks(tmp_path):
 
     store.delete("doc.md")
 
-    with pytest.raises(FileNotFoundError):
-        store.load("doc.md")
+    assert store.load("doc.md") == []
+
+
+def test_delete_is_noop_for_unsaved_source(tmp_path):
+    store = _store(tmp_path)
+
+    store.delete("missing.md")
+
+    assert store.load("missing.md") == []
+
+
+def test_save_roundtrips_page_range(tmp_path):
+    store = _store(tmp_path)
+    chunk = Chunk(
+        id="pdf-chunk-0000",
+        source="doc.pdf",
+        index=0,
+        text="Page text.",
+        page_start=3,
+        page_end=4,
+    )
+
+    store.save("doc.pdf", [chunk])
+    loaded = store.load("doc.pdf")
+
+    assert loaded == [chunk]
+    assert loaded[0].page_start == 3
+    assert loaded[0].page_end == 4

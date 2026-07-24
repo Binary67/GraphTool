@@ -1,10 +1,15 @@
 import hashlib
-import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel
+
+from graphtool.storage import as_connection, decode_vector, encode_vector
+
+# Keeps DELETE ... IN (...) statements under SQLite's bound-variable limit.
+_DELETE_BATCH_SIZE = 500
 
 
 class ChunkEmbeddingRecord(BaseModel):
@@ -25,48 +30,67 @@ class ChunkEmbeddingStore(Protocol):
         ...
 
 
-class JsonChunkEmbeddingStore:
-    """Filesystem-backed embedding cache for retrieval chunks."""
+class SqliteChunkEmbeddingStore:
+    """SQLite-backed embedding cache for retrieval chunks."""
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
+    def __init__(
+        self,
+        conn_or_path: sqlite3.Connection | str | Path,
+    ) -> None:
+        self._conn = as_connection(conn_or_path)
 
     def save(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "records": [
-                record.model_dump()
-                for record in sorted(records.values(), key=lambda item: item.chunk_id)
-            ]
-        }
-        self._path.write_text(json.dumps(data, indent=2))
+        rows = [
+            (
+                record.chunk_id,
+                record.embedding_model,
+                record.embedding_input_hash,
+                encode_vector(record.vector),
+            )
+            for record in records.values()
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM chunk_embeddings")
+            self._conn.executemany(
+                "INSERT INTO chunk_embeddings "
+                "(chunk_id, embedding_model, embedding_input_hash, vector) "
+                "VALUES (?, ?, ?, ?)",
+                rows,
+            )
 
     def load(self) -> dict[str, ChunkEmbeddingRecord]:
-        if not self._path.exists():
-            return {}
-
-        data = json.loads(self._path.read_text())
+        rows = self._conn.execute(
+            "SELECT chunk_id, embedding_model, embedding_input_hash, vector "
+            "FROM chunk_embeddings"
+        ).fetchall()
         return {
-            record.chunk_id: record
-            for record in (
-                ChunkEmbeddingRecord.model_validate(item)
-                for item in data.get("records", [])
+            row["chunk_id"]: ChunkEmbeddingRecord(
+                chunk_id=row["chunk_id"],
+                embedding_model=row["embedding_model"],
+                embedding_input_hash=row["embedding_input_hash"],
+                vector=decode_vector(row["vector"]),
             )
+            for row in rows
         }
 
     def exists(self) -> bool:
-        return self._path.exists()
+        row = self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM chunk_embeddings LIMIT 1)"
+        ).fetchone()
+        return bool(row[0])
 
     def delete(self, chunk_ids: list[str]) -> None:
-        if not self._path.exists():
+        if not chunk_ids:
             return
-        deleted = set(chunk_ids)
-        records = {
-            chunk_id: record
-            for chunk_id, record in self.load().items()
-            if chunk_id not in deleted
-        }
-        self.save(records)
+        with self._conn:
+            for start in range(0, len(chunk_ids), _DELETE_BATCH_SIZE):
+                batch = chunk_ids[start : start + _DELETE_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch)
+                self._conn.execute(
+                    f"DELETE FROM chunk_embeddings "
+                    f"WHERE chunk_id IN ({placeholders})",
+                    batch,
+                )
 
 
 def chunk_embedding_input_hash(text: str) -> str:

@@ -2,9 +2,9 @@
 
 from graphtool.graph.base import KnowledgeGraphStore
 from graphtool.graph.embedding_store import (
-    JsonEmbeddingStore,
-    JsonGraphEmbeddingStore,
     NodeEmbeddingRecord,
+    SqliteEmbeddingStore,
+    SqliteGraphEmbeddingStore,
 )
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
@@ -16,8 +16,8 @@ from graphtool.graph.taxonomy import (
     CANONICAL_NODE_TYPES,
     JsonNodeTypeRegistryStore,
     JsonTaxonomyPromotionAuditStore,
-    JsonTaxonomySuggestionStore,
     NodeTypeRegistry,
+    SqliteTaxonomySuggestionStore,
     TaxonomyEvolutionResult,
     TaxonomyPromotionRecord,
     TaxonomySuggestionAggregate,
@@ -46,13 +46,13 @@ __all__ = [
     "EdgeProvenance",
     "GraphMetadata",
     "JsonChunkExtractionStore",
-    "JsonEmbeddingStore",
-    "JsonGraphEmbeddingStore",
+    "SqliteEmbeddingStore",
+    "SqliteGraphEmbeddingStore",
     "JsonGraphStore",
     "JsonKnowledgeBaseStore",
     "JsonNodeTypeRegistryStore",
     "JsonTaxonomyPromotionAuditStore",
-    "JsonTaxonomySuggestionStore",
+    "SqliteTaxonomySuggestionStore",
     "KnowledgeGraph",
     "KnowledgeGraphStore",
     "NodeEmbeddingRecord",
