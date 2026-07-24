@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict
 
 from graphtool.retrieval import SourceReference
@@ -32,6 +32,8 @@ class QueryDecomposition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     subquestions: list[str] = Field(min_length=1, max_length=5)
+    knowledge_scope: str | None = None
+    unmatched_scope: str = ""
 
     @field_validator("subquestions")
     @classmethod
@@ -44,6 +46,17 @@ class QueryDecomposition(BaseModel):
         if not normalized:
             raise ValueError("At least one non-empty subquestion is required.")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_scope_selection(self) -> "QueryDecomposition":
+        if self.knowledge_scope is not None:
+            self.knowledge_scope = self.knowledge_scope.strip() or None
+        self.unmatched_scope = self.unmatched_scope.strip()
+        if self.knowledge_scope is not None and self.unmatched_scope:
+            raise ValueError(
+                "knowledge_scope and unmatched_scope cannot both be set."
+            )
+        return self
 
 
 class SubquestionOutcome(BaseModel):
@@ -96,6 +109,7 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     conversation_summary: str
     question: str
+    knowledge_scope: str | None
     subquestions: list[str]
     subquestion_index: int
     subquestion_outcomes: list[SubquestionOutcome]

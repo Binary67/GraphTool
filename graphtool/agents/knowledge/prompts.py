@@ -1,6 +1,13 @@
 DECOMPOSITION_SYSTEM_PROMPT = """\
 Decompose the user's question into the smallest useful set of retrieval
-subquestions.
+subquestions and select its knowledge-folder scope.
+
+Set knowledge_scope to the exact catalog name only when the user explicitly asks
+to search that folder or restrict the answer to it. A folder name used only as the
+topic of the question is not a search restriction. Leave knowledge_scope null when
+the user gives no folder restriction, which means search all folders. If the user
+requests a folder that does not clearly match the catalog, leave knowledge_scope
+null and put the requested folder name in unmatched_scope.
 
 Create a separate subquestion for each explicit answer facet that can be
 independently researched and evaluated, even when all facets concern the same

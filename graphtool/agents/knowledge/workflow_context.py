@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -24,6 +24,7 @@ def research_context(state: AgentState) -> str:
         f"{state.get('conversation_summary') or '[None]'}\n\n"
         f"Original question: {state['question']}\n"
         f"Current subquestion: {_current_question(state)}\n"
+        f"Knowledge scope: {state.get('knowledge_scope') or 'all'}\n"
         f"Prior retrieval queries: {state['retrieval_queries'] or ['None']}\n"
         f"Available chunks: {available_chunks or ['None']}\n"
         f"Used neighborhoods: {state['used_neighborhoods'] or ['None']}\n"
@@ -64,9 +65,17 @@ def answer_text(state: AgentState, *, partial: bool) -> str:
     )
 
 
-def decomposition_text(state: AgentState) -> str:
+def decomposition_text(
+    state: AgentState,
+    knowledge_scopes: Mapping[str, str],
+) -> str:
+    scope_catalog = "\n".join(
+        f"- {name}" for name in knowledge_scopes
+    )
     return (
         f"Conversation:\n{_conversation_context_text(state)}\n\n"
+        f"Available knowledge-folder catalog:\n"
+        f"{scope_catalog or '[None configured]'}\n\n"
         f"Question to decompose:\n{state['question']}"
     )
 

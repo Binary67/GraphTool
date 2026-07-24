@@ -82,7 +82,14 @@ class MissingKnowledgeBaseStore:
 
 
 class FakeRuntime:
-    def __init__(self, results, *, neighborhoods=None, knowledge_base_exists=True):
+    def __init__(
+        self,
+        results,
+        *,
+        neighborhoods=None,
+        knowledge_base_exists=True,
+        knowledge_scopes=None,
+    ):
         self.knowledge_base_store = (
             ExistingKnowledgeBaseStore()
             if knowledge_base_exists
@@ -90,10 +97,13 @@ class FakeRuntime:
         )
         self.results = list(results)
         self.search_calls = []
+        self.search_scopes = []
+        self.knowledge_scopes = knowledge_scopes or {}
         self.chunk_store = FakeChunkStore(neighborhoods or {})
 
-    def search(self, query):
+    def search(self, query, *, scope=None):
         self.search_calls.append(query)
+        self.search_scopes.append(scope)
         if not self.results:
             raise AssertionError("No scripted retrieval result")
         return self.results.pop(0)
@@ -341,6 +351,104 @@ def test_agent_does_not_retry_answer_when_all_citations_are_valid():
     assert response.search_count == 1
     assert runtime.search_calls == ["GraphTool capabilities"]
     assert len(model.calls[FinalAnswerDraft]) == 1
+
+
+def test_agent_applies_selected_catalog_scope_to_every_search():
+    model = ScriptedModel(
+        {
+            QueryDecomposition: [
+                QueryDecomposition(
+                    subquestions=["What is the project status?"],
+                    knowledge_scope="work",
+                )
+            ],
+            ToolModelResponse: [_search_call("project status")],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="The project is on schedule.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [_result("project status", source="documents/work/status.md")],
+        knowledge_scopes={
+            "work": "documents/work",
+            "personal": "documents/personal",
+        },
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Please search only my work folder for the project status.",
+        thread_id="thread-1",
+    )
+
+    assert response.answer == "The project is on schedule."
+    assert runtime.search_scopes == ["work"]
+    decomposition_prompt = model.calls[QueryDecomposition][0][1].content
+    assert "Available knowledge-folder catalog:\n- work\n- personal" in (
+        decomposition_prompt
+    )
+
+
+def test_agent_searches_all_sources_when_no_scope_is_selected():
+    model = ScriptedModel(
+        {
+            ToolModelResponse: [_search_call("GraphTool capabilities")],
+            SufficiencyDecision: [SufficiencyDecision(verdict="sufficient")],
+            FinalAnswerDraft: [
+                FinalAnswerDraft(
+                    answer="GraphTool builds a knowledge graph.",
+                    cited_reference_ids=["S1"],
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [_result("GraphTool capabilities")],
+        knowledge_scopes={"work": "documents/work"},
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    agent.ask("What does GraphTool do?", thread_id="thread-1")
+
+    assert runtime.search_scopes == [None]
+
+
+def test_agent_asks_for_clarification_for_unknown_scope():
+    model = ScriptedModel(
+        {
+            QueryDecomposition: [
+                QueryDecomposition(
+                    subquestions=["Find the plan."],
+                    unmatched_scope="business",
+                )
+            ],
+        }
+    )
+    runtime = FakeRuntime(
+        [],
+        knowledge_scopes={
+            "work": "documents/work",
+            "personal": "documents/personal",
+        },
+    )
+    agent = create_knowledge_agent(model, model, runtime)
+
+    response = agent.ask(
+        "Search only my business folder for the plan.",
+        thread_id="thread-1",
+    )
+
+    assert response.answer == (
+        "I couldn't match that folder to the knowledge-folder catalog. "
+        "Available folders are: work, personal. Which folder should I search?"
+    )
+    assert response.search_count == 0
+    assert runtime.search_calls == []
 
 
 def test_agent_uses_fast_model_only_for_orchestration_stages():

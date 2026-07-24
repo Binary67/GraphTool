@@ -177,15 +177,27 @@ def build_workflow_graph(
         }
 
     def decompose(state: AgentState) -> dict:
+        knowledge_scopes = getattr(runtime, "knowledge_scopes", {})
         result, duration = _invoke_model(
             decomposition_model,
             [
                 SystemMessage(content=DECOMPOSITION_SYSTEM_PROMPT),
-                HumanMessage(content=decomposition_text(state)),
+                HumanMessage(
+                    content=decomposition_text(state, knowledge_scopes)
+                ),
             ],
             stage="question decomposition",
         )
         decomposition = _validated_output(QueryDecomposition, result)
+        selected_scope = (
+            decomposition.knowledge_scope.casefold()
+            if decomposition.knowledge_scope is not None
+            else None
+        )
+        unmatched_scope = decomposition.unmatched_scope
+        if selected_scope is not None and selected_scope not in knowledge_scopes:
+            unmatched_scope = decomposition.knowledge_scope or selected_scope
+            selected_scope = None
         RUN_LOGGER.info(
             "Question decomposition completed in %.2fs: subquestions=%d",
             duration,
@@ -197,10 +209,38 @@ def build_workflow_graph(
                 index,
                 subquestion,
             )
+        if unmatched_scope:
+            available = ", ".join(knowledge_scopes)
+            direct_response = (
+                "I couldn't match that folder to the knowledge-folder catalog. "
+                f"Available folders are: {available}. Which folder should I search?"
+                if available
+                else (
+                    "I couldn't match that folder because no knowledge folders "
+                    "are configured."
+                )
+            )
+            RUN_LOGGER.info(
+                "Knowledge scope could not be matched: %s",
+                unmatched_scope,
+            )
+            return {
+                "subquestions": decomposition.subquestions,
+                "subquestion_index": 0,
+                "subquestion_outcomes": [],
+                "knowledge_scope": None,
+                "direct_response": direct_response,
+            }
+        RUN_LOGGER.info(
+            "Knowledge scope selected: %s",
+            selected_scope or "all",
+        )
         return {
             "subquestions": decomposition.subquestions,
             "subquestion_index": 0,
             "subquestion_outcomes": [],
+            "knowledge_scope": selected_scope,
+            "direct_response": None,
         }
 
     def research(state: AgentState) -> dict:
@@ -589,6 +629,7 @@ def build_workflow_graph(
     def cleanup(state: AgentState) -> dict:
         return {
             "question": "",
+            "knowledge_scope": None,
             "subquestions": [],
             "subquestion_index": 0,
             "subquestion_outcomes": [],
@@ -621,7 +662,14 @@ def build_workflow_graph(
     builder.add_node("cleanup", cleanup)
     builder.add_edge(START, "compact")
     builder.add_edge("compact", "decompose")
-    builder.add_edge("decompose", "research")
+    builder.add_conditional_edges(
+        "decompose",
+        _route_decomposition,
+        {
+            "research": "research",
+            "finish_conversation": "finish_conversation",
+        },
+    )
     builder.add_conditional_edges(
         "research",
         _route_research,
@@ -662,6 +710,14 @@ def _route_research(state: AgentState) -> str:
     if state.get("research_action") == "answer":
         return "complete_subquestion"
     raise RuntimeError("Research action is missing.")
+
+
+def _route_decomposition(state: AgentState) -> str:
+    return (
+        "finish_conversation"
+        if state.get("direct_response")
+        else "research"
+    )
 
 
 def _route_evaluation(state: AgentState) -> str:

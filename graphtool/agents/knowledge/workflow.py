@@ -67,6 +67,7 @@ class KnowledgeAgent:
             {
                 "messages": [HumanMessage(content=normalized_question)],
                 "question": normalized_question,
+                "knowledge_scope": None,
                 "subquestions": [],
                 "subquestion_index": 0,
                 "subquestion_outcomes": [],

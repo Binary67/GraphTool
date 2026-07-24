@@ -16,6 +16,24 @@ documents/
 The folders are organizational; supported files can be nested anywhere under
 `documents/` and are identified by extension.
 
+Knowledge-folder scopes are configured in `config/knowledge_scopes.json`. Each
+catalog name maps a user-friendly folder name to its path:
+
+```json
+{
+  "work": "documents/work",
+  "personal": "documents/personal",
+  "finance": "documents/finance"
+}
+```
+
+When a user explicitly asks the agent to search a catalog folder, such as
+"search only my work folder," the selected scope applies to all retrieval for
+that question. Direct chunk results and knowledge-graph paths are both limited
+to documents under that folder. If no folder restriction is requested, the
+agent searches the complete knowledge base. An unrecognized folder request
+returns the available catalog names and asks the user to clarify.
+
 PDFs are rendered page by page and converted to Markdown with the configured
 `AZURE_OPENAI_FAST_DEPLOYMENT`. Converted pages are cached under
 `data/pdf_conversions/`, so unchanged PDFs do not require additional model calls.

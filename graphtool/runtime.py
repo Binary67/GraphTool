@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,10 +13,13 @@ from graphtool.graph import (
     SqliteGraphEmbeddingStore,
     SqliteKnowledgeBaseStore,
     SqliteTaxonomySuggestionStore,
+    filter_knowledge_graph_by_sources,
 )
+from graphtool.knowledge_scopes import load_knowledge_scopes, source_is_in_scope
 from graphtool.llm import AzureOpenAIAudioTranscriber, AzureOpenAIClient
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.retrieval import (
+    ChunkEmbeddingRecord,
     RetrievalResult,
     SqliteChunkEmbeddingStore,
 )
@@ -33,6 +37,7 @@ DEFAULT_MAX_LOG_FILES = 3
 class GraphToolPaths:
     root: Path
     documents_dir: Path
+    knowledge_scopes_path: Path
     audio_transcriptions_dir: Path
     audio_transcription_glossary_path: Path
     pdf_conversions_dir: Path
@@ -51,19 +56,49 @@ class GraphToolRuntime:
     chunk_extraction_store: JsonChunkExtractionStore
     fast_llm: AzureOpenAIClient
     audio_transcriber: AzureOpenAIAudioTranscriber
-    _search_retriever: PreparedHybridRetriever | None = field(
+    knowledge_scopes: dict[str, str] = field(default_factory=dict)
+    _search_retrievers: dict[str | None, PreparedHybridRetriever] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _search_graph: KnowledgeGraph | None = field(
         default=None,
         init=False,
         repr=False,
         compare=False,
     )
+    _search_chunks: list[Chunk] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
-    def search(self, query: str, *, top_chunks: int = 5) -> RetrievalResult:
-        if self._search_retriever is None:
+    def search(
+        self,
+        query: str,
+        *,
+        scope: str | None = None,
+        top_chunks: int = 5,
+    ) -> RetrievalResult:
+        if self._search_graph is None:
             raise RuntimeError(
                 "Search is not prepared. Call prepare_search after synchronization."
             )
-        return self._search_retriever.retrieve(query, top_chunks=top_chunks)
+        normalized_scope = scope.strip().casefold() if scope is not None else None
+        if normalized_scope is not None and normalized_scope not in self.knowledge_scopes:
+            available = ", ".join(self.knowledge_scopes) or "none"
+            raise ValueError(
+                f"Unknown knowledge scope {scope!r}. Available scopes: {available}."
+            )
+        retriever = self._search_retrievers.get(normalized_scope)
+        if retriever is None:
+            assert normalized_scope is not None
+            retriever = self._prepare_scoped_retriever(normalized_scope)
+            self._search_retrievers[normalized_scope] = retriever
+        return retriever.retrieve(query, top_chunks=top_chunks)
 
     @property
     def graph_store(self) -> SqliteGraphStore:
@@ -95,12 +130,40 @@ class GraphToolRuntime:
 
     def prepare_search(self) -> None:
         graph, chunks = self._search_inputs()
-        self._search_retriever = prepare_hybrid_retriever(
+        self._search_graph = graph
+        self._search_chunks = chunks
+        self._search_retrievers = {
+            None: prepare_hybrid_retriever(
+                graph,
+                chunks,
+                embedding_client=self.fast_llm,
+                chunk_embedding_store=self.chunk_embedding_store,
+                node_embedding_store=self.knowledge_base_embedding_store,
+            )
+        }
+
+    def _prepare_scoped_retriever(
+        self,
+        scope: str,
+    ) -> PreparedHybridRetriever:
+        assert self._search_graph is not None
+        prefix = self.knowledge_scopes[scope]
+        chunks = [
+            chunk
+            for chunk in self._search_chunks
+            if source_is_in_scope(chunk.source, prefix)
+        ]
+        sources = {chunk.source for chunk in chunks}
+        graph = filter_knowledge_graph_by_sources(self._search_graph, sources)
+        embedding_store = _MemoryChunkEmbeddingStore(
+            self.chunk_embedding_store.load()
+        )
+        return prepare_hybrid_retriever(
             graph,
             chunks,
             embedding_client=self.fast_llm,
-            chunk_embedding_store=self.chunk_embedding_store,
-            node_embedding_store=self.knowledge_base_embedding_store,
+            chunk_embedding_store=embedding_store,
+            node_embedding_store=None,
         )
 
     def _search_inputs(self) -> tuple[KnowledgeGraph, list[Chunk]]:
@@ -117,6 +180,7 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
     return GraphToolPaths(
         root=project_root,
         documents_dir=project_root / "documents",
+        knowledge_scopes_path=project_root / "config" / "knowledge_scopes.json",
         audio_transcriptions_dir=data_dir / "audio_transcriptions",
         audio_transcription_glossary_path=(
             project_root / "config" / "transcription_glossary.json"
@@ -149,4 +213,25 @@ def create_runtime(
             text_deployment=config.fast_deployment,
         ),
         audio_transcriber=AzureOpenAIAudioTranscriber(config),
+        knowledge_scopes=load_knowledge_scopes(
+            runtime_paths.knowledge_scopes_path
+        ),
     )
+
+
+class _MemoryChunkEmbeddingStore:
+    def __init__(
+        self,
+        records: Mapping[str, ChunkEmbeddingRecord],
+    ) -> None:
+        self._records = dict(records)
+
+    def load(self) -> dict[str, ChunkEmbeddingRecord]:
+        return dict(self._records)
+
+    def upsert(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
+        self._records.update(records)
+
+    def delete(self, chunk_ids: list[str]) -> None:
+        for chunk_id in chunk_ids:
+            self._records.pop(chunk_id, None)

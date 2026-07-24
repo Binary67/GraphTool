@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
 
 from graphtool.chunking.types import Chunk
-from graphtool.graph.types import Edge, KnowledgeGraph, Node
+from graphtool.graph.combiner import combine_knowledge_graphs
+from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.runtime import create_runtime, default_paths
 
@@ -63,6 +65,9 @@ def test_default_paths_match_project_layout(tmp_path):
 
     assert paths.root == tmp_path
     assert paths.documents_dir == tmp_path / "documents"
+    assert paths.knowledge_scopes_path == (
+        tmp_path / "config" / "knowledge_scopes.json"
+    )
     assert paths.audio_transcriptions_dir == tmp_path / "data" / "audio_transcriptions"
     assert paths.audio_transcription_glossary_path == (
         tmp_path / "config" / "transcription_glossary.json"
@@ -96,6 +101,26 @@ def test_create_runtime_uses_fast_deployment_for_runtime_llm(monkeypatch, tmp_pa
     assert runtime.fast_llm.text_deployment == "fast-deployment"
     assert runtime.audio_transcriber.config is config
     assert runtime.chunk_extraction_store.load("docs/missing.md") == {}
+
+
+def test_create_runtime_loads_knowledge_scope_catalog(monkeypatch, tmp_path):
+    paths = default_paths(tmp_path)
+    paths.knowledge_scopes_path.parent.mkdir()
+    paths.knowledge_scopes_path.write_text(
+        '{"work": "documents/work", "personal": "documents/personal"}'
+    )
+    monkeypatch.setattr("graphtool.runtime.AzureOpenAIClient", FakeAzureOpenAIClient)
+    monkeypatch.setattr(
+        "graphtool.runtime.AzureOpenAIAudioTranscriber",
+        FakeAudioTranscriber,
+    )
+
+    runtime = create_runtime(_config(), paths=paths)
+
+    assert runtime.knowledge_scopes == {
+        "work": "documents/work",
+        "personal": "documents/personal",
+    }
 
 
 def test_search_uses_combined_graph_all_chunks_and_top_chunks(monkeypatch, tmp_path):
@@ -319,6 +344,117 @@ def test_search_combines_direct_chunks_and_graph_paths(monkeypatch, tmp_path):
         "alpha-beta",
         "beta-gamma",
     }
+
+
+def test_search_scope_filters_chunks_and_graph_paths(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    work_source = "documents/work/project.md"
+    personal_source = "documents/personal/notes.md"
+    work_chunk = Chunk(
+        id="work-alpha-shared",
+        source=work_source,
+        index=0,
+        text="Alpha uses Shared.",
+    )
+    personal_chunk = Chunk(
+        id="personal-shared-secret",
+        source=personal_source,
+        index=0,
+        text="Shared contains Personal Secret.",
+    )
+    runtime.chunk_store.save(work_source, [work_chunk])
+    runtime.chunk_store.save(personal_source, [personal_chunk])
+    created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    work_graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="alpha",
+                label="Alpha",
+                type="System",
+                chunk_ids=[work_chunk.id],
+            ),
+            Node(
+                id="shared",
+                label="Shared",
+                type="Component",
+                chunk_ids=[work_chunk.id],
+            ),
+        ],
+        edges=[
+            Edge(
+                id="work-edge",
+                source="alpha",
+                target="shared",
+                label="uses",
+                chunk_ids=[work_chunk.id],
+            )
+        ],
+        metadata=GraphMetadata(
+            source=work_source,
+            content_hash="work-hash",
+            created_at=created_at,
+        ),
+    )
+    personal_graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="shared",
+                label="Shared",
+                type="Component",
+                chunk_ids=[personal_chunk.id],
+            ),
+            Node(
+                id="secret",
+                label="Personal Secret",
+                type="Concept",
+                chunk_ids=[personal_chunk.id],
+            ),
+        ],
+        edges=[
+            Edge(
+                id="personal-edge",
+                source="shared",
+                target="secret",
+                label="contains",
+                chunk_ids=[personal_chunk.id],
+            )
+        ],
+        metadata=GraphMetadata(
+            source=personal_source,
+            content_hash="personal-hash",
+            created_at=created_at,
+        ),
+    )
+    runtime.knowledge_base_store.replace_all(
+        combine_knowledge_graphs([work_graph, personal_graph])
+    )
+    runtime.knowledge_scopes = {"work": "documents/work"}
+
+    runtime.prepare_search()
+    result = runtime.search("Shared Personal Secret", scope="work")
+
+    assert result.chunks
+    assert {hit.chunk.source for hit in result.chunks} == {work_source}
+    assert {
+        node.id
+        for path in result.graph_paths
+        for node in path.nodes
+    } <= {"alpha", "shared"}
+    assert {
+        edge.id
+        for path in result.graph_paths
+        for edge in path.edges
+    } <= {"work-edge"}
+
+
+def test_search_rejects_unknown_scope(monkeypatch, tmp_path):
+    runtime = _runtime(monkeypatch, tmp_path)
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_scopes = {"work": "documents/work"}
+    runtime.prepare_search()
+
+    with pytest.raises(ValueError, match="Unknown knowledge scope 'personal'"):
+        runtime.search("query", scope="personal")
 
 
 def test_search_requires_synchronized_knowledge_base(monkeypatch, tmp_path):

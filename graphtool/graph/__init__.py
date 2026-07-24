@@ -13,7 +13,10 @@ from graphtool.graph.sqlite_store import (
     SqliteGraphStore,
     SqliteKnowledgeBaseStore,
 )
-from graphtool.graph.provenance import filter_knowledge_graph_by_source
+from graphtool.graph.provenance import (
+    filter_knowledge_graph_by_source,
+    filter_knowledge_graph_by_sources,
+)
 from graphtool.graph.resolver import SemanticEntityResolver
 from graphtool.graph.taxonomy import (
     CANONICAL_NODE_TYPES,
@@ -74,6 +77,7 @@ __all__ = [
     "default_node_type_registry",
     "evolve_taxonomy",
     "filter_knowledge_graph_by_source",
+    "filter_knowledge_graph_by_sources",
     "generate_knowledge_graph",
     "migrate_promoted_types",
     "normalize_type_name",

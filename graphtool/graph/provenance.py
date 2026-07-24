@@ -157,16 +157,28 @@ def filter_knowledge_graph_by_source(
     graph: KnowledgeGraph,
     source: str,
 ) -> KnowledgeGraph:
+    return filter_knowledge_graph_by_sources(graph, [source])
+
+
+def filter_knowledge_graph_by_sources(
+    graph: KnowledgeGraph,
+    sources: Sequence[str],
+) -> KnowledgeGraph:
+    allowed_sources = set(sources)
     nodes = []
     for node in graph.nodes:
-        provenance = [item for item in node.provenance if item.source == source]
+        provenance = [
+            item for item in node.provenance if item.source in allowed_sources
+        ]
         if provenance:
             nodes.append(materialize_node(node.id, provenance))
 
     node_ids = {node.id for node in nodes}
     edges = []
     for edge in graph.edges:
-        provenance = [item for item in edge.provenance if item.source == source]
+        provenance = [
+            item for item in edge.provenance if item.source in allowed_sources
+        ]
         if provenance and edge.source in node_ids and edge.target in node_ids:
             edges.append(
                 materialize_edge(

@@ -54,13 +54,19 @@ def create_knowledge_tools(runtime: GraphToolRuntime) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
     def search_knowledge_base(
         query: str,
+        state: Annotated[AgentState, InjectedState],
     ) -> tuple[str, KnowledgeSearchArtifact]:
         """Search document chunks and knowledge-graph paths for one focused query."""
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("Knowledge base search query must not be empty.")
 
-        result = runtime.search(normalized_query)
+        scope = state.get("knowledge_scope")
+        result = (
+            runtime.search(normalized_query, scope=scope)
+            if scope is not None
+            else runtime.search(normalized_query)
+        )
         artifact = KnowledgeSearchArtifact(
             query=normalized_query,
             context_text=result.context_text,
