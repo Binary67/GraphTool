@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ AUDIO_SAMPLE_RATE = 16_000
 AUDIO_BITRATE = "64k"
 AUDIO_MAX_CHUNK_BYTES = 24_000_000
 AUDIO_CONTEXT_TAIL_CHARS = 500
-AUDIO_TRANSCRIPTION_FORMAT_REVISION = 2
+AUDIO_TRANSCRIPTION_FORMAT_REVISION = 3
 AUDIO_ASSEMBLY_REVISION = 1
 _MIN_OVERLAP_MATCH_TOKENS = 5
 _MAX_OVERLAP_WINDOW_TOKENS = 100
@@ -31,9 +32,14 @@ class AudioTranscriptChunk(BaseModel):
     text: str
 
 
+class _AudioTranscriptionGlossary(BaseModel):
+    terms: list[str]
+
+
 class _AudioConversionManifest(BaseModel):
     source_hash: str
     model: str
+    glossary_hash: str = ""
     format_revision: int
     assembly_revision: int = 0
     chunk_milliseconds: int
@@ -51,10 +57,13 @@ def convert_audio_to_markdown(
     source: str,
     transcriber: AudioTranscriptionClient,
     cache_dir: str | Path,
+    terms: Sequence[str],
 ) -> str:
     audio_path = Path(path)
     with audio_path.open("rb") as audio_file:
         source_hash = hashlib.file_digest(audio_file, "sha256").hexdigest()
+    glossary_prompt = _glossary_prompt(terms)
+    glossary_hash = _text_hash(glossary_prompt or "")
 
     source_cache_dir = Path(cache_dir) / source_key(source)
     manifest_path = source_cache_dir / "manifest.json"
@@ -64,6 +73,7 @@ def convert_audio_to_markdown(
         manifest,
         source_hash,
         transcriber.transcription_model,
+        glossary_hash,
     ):
         if manifest.complete and markdown_path.exists():
             markdown = markdown_path.read_text(encoding="utf-8")
@@ -78,6 +88,7 @@ def convert_audio_to_markdown(
     expected_manifest = _AudioConversionManifest(
         source_hash=source_hash,
         model=transcriber.transcription_model,
+        glossary_hash=glossary_hash,
         format_revision=AUDIO_TRANSCRIPTION_FORMAT_REVISION,
         assembly_revision=AUDIO_ASSEMBLY_REVISION,
         chunk_milliseconds=AUDIO_CHUNK_MILLISECONDS,
@@ -130,7 +141,10 @@ def convert_audio_to_markdown(
                     ffmpeg,
                     source,
                 )
-                prompt = _context_prompt(chunks[-1].text if chunks else None)
+                prompt = _context_prompt(
+                    glossary_prompt,
+                    chunks[-1].text if chunks else None,
+                )
                 text = _normalize_transcript(
                     transcriber.transcribe_audio(chunk_path, prompt=prompt)
                 )
@@ -154,6 +168,22 @@ def convert_audio_to_markdown(
     )
     _write_model_atomic(manifest_path, completed_manifest)
     return markdown
+
+
+def load_audio_transcription_terms(path: str | Path) -> list[str]:
+    glossary_path = Path(path)
+    if not glossary_path.exists():
+        return []
+    glossary = _AudioTranscriptionGlossary.model_validate_json(
+        glossary_path.read_text(encoding="utf-8")
+    )
+    terms = [term.strip() for term in glossary.terms]
+    if any(not term for term in terms):
+        raise ValueError(
+            f"Audio transcription glossary {str(glossary_path)!r} "
+            "contains an empty term."
+        )
+    return terms
 
 
 def _probe_duration(audio_path: Path, source: str, ffprobe: str) -> int:
@@ -237,10 +267,31 @@ def _render_chunk(
         )
 
 
-def _context_prompt(previous_text: str | None) -> str | None:
-    if previous_text is None:
+def _glossary_prompt(terms: Sequence[str]) -> str | None:
+    if not terms:
         return None
-    return previous_text[-AUDIO_CONTEXT_TAIL_CHARS:]
+    term_list = "\n".join(f"- {term}" for term in terms)
+    return (
+        "Expected proper nouns and exact spellings:\n"
+        f"{term_list}\n"
+        "Use these spellings only when they match the spoken audio."
+    )
+
+
+def _context_prompt(
+    glossary_prompt: str | None,
+    previous_text: str | None,
+) -> str | None:
+    previous_context = (
+        previous_text[-AUDIO_CONTEXT_TAIL_CHARS:]
+        if previous_text is not None
+        else None
+    )
+    if glossary_prompt is None:
+        return previous_context
+    if previous_context is None:
+        return glossary_prompt
+    return f"{glossary_prompt}\n\nPrevious transcript context:\n{previous_context}"
 
 
 def _assemble_markdown(
@@ -385,6 +436,7 @@ def _same_conversion(
     fields = (
         "source_hash",
         "model",
+        "glossary_hash",
         "format_revision",
         "chunk_milliseconds",
         "overlap_milliseconds",
@@ -400,10 +452,12 @@ def _same_source_and_settings(
     manifest: _AudioConversionManifest,
     source_hash: str,
     model: str,
+    glossary_hash: str,
 ) -> bool:
     return (
         manifest.source_hash == source_hash
         and manifest.model == model
+        and manifest.glossary_hash == glossary_hash
         and manifest.format_revision == AUDIO_TRANSCRIPTION_FORMAT_REVISION
         and manifest.assembly_revision == AUDIO_ASSEMBLY_REVISION
         and manifest.chunk_milliseconds == AUDIO_CHUNK_MILLISECONDS

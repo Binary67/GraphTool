@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+config/transcription_glossary.json
 
 # User-uploaded markdown inputs and generated knowledge graphs
 documents/**

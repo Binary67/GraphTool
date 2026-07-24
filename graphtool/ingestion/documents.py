@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 from graphtool.ingestion.audio import convert_audio_to_markdown
@@ -31,6 +32,7 @@ def load_documents(
     presentation_cache_dir: str | Path,
     audio_transcriber: AudioTranscriptionClient,
     audio_cache_dir: str | Path,
+    audio_transcription_terms: Sequence[str],
 ) -> dict[str, str]:
     path = Path(directory)
     if not path.exists():
@@ -115,5 +117,6 @@ def load_documents(
                 source,
                 audio_transcriber,
                 audio_cache_dir,
+                audio_transcription_terms,
             )
     return documents

@@ -63,6 +63,25 @@ recordings under `documents/`, preferably `documents/recordings/`. Interrupted
 conversions resume from the last cached chunk, and assembly changes reuse raw
 transcripts. The configured deployment should use `gpt-4o-transcribe`.
 
+Copy `config/transcription_glossary.example.json` to
+`config/transcription_glossary.json`, then add names, project names, acronyms,
+and other expected proper nouns. The local glossary is gitignored so personal
+terms are not committed. If it does not exist, ingestion uses an empty list.
+Each entry is sent to the transcription model as an exact-spelling hint.
+Pronunciation notes are optional and can be written in parentheses:
+
+```json
+{
+  "terms": [
+    "HIP-SA (pronounced \"hip sah\")",
+    "Aishwarya Rao"
+  ]
+}
+```
+
+Changing the glossary invalidates cached audio transcripts so they are
+transcribed again with the updated terms.
+
 ## Knowledge agent
 
 Set `AZURE_OPENAI_AGENT_DEPLOYMENT` to an Azure OpenAI deployment that supports

@@ -15,6 +15,7 @@ def test_load_documents_returns_empty_for_missing_directory(tmp_path):
         presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=object(),
         audio_cache_dir=tmp_path / "audio-cache",
+        audio_transcription_terms=[],
     )
 
     assert documents == {}
@@ -71,6 +72,7 @@ def test_load_documents_reads_markdown_and_converts_pdf_and_pptx(
         presentation_cache_dir=presentation_cache_dir,
         audio_transcriber=object(),
         audio_cache_dir=tmp_path / "audio-cache",
+        audio_transcription_terms=[],
     )
 
     assert documents == {
@@ -128,6 +130,7 @@ def test_load_documents_does_not_return_partial_results_on_pdf_failure(
             presentation_cache_dir=tmp_path / "presentation-cache",
             audio_transcriber=object(),
             audio_cache_dir=tmp_path / "audio-cache",
+            audio_transcription_terms=[],
         )
 
 
@@ -139,8 +142,8 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
     audio_path.write_bytes(b"audio")
     calls = []
 
-    def fake_convert(path, source, transcriber, cache_dir):
-        calls.append((path, source, transcriber, cache_dir))
+    def fake_convert(path, source, transcriber, cache_dir, terms):
+        calls.append((path, source, transcriber, cache_dir, terms))
         return "# Transcript: customer.MP3\n\nInterview text.\n"
 
     monkeypatch.setattr(
@@ -158,6 +161,7 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
         presentation_cache_dir=tmp_path / "presentation-cache",
         audio_transcriber=transcriber,
         audio_cache_dir=cache_dir,
+        audio_transcription_terms=["HIP-SA"],
     )
 
     assert documents == {
@@ -171,5 +175,6 @@ def test_load_documents_converts_nested_audio(monkeypatch, tmp_path):
             "documents/recordings/interviews/customer.MP3",
             transcriber,
             cache_dir,
+            ["HIP-SA"],
         )
     ]

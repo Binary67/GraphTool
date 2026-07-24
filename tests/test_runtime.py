@@ -64,6 +64,9 @@ def test_default_paths_match_project_layout(tmp_path):
     assert paths.root == tmp_path
     assert paths.documents_dir == tmp_path / "documents"
     assert paths.audio_transcriptions_dir == tmp_path / "data" / "audio_transcriptions"
+    assert paths.audio_transcription_glossary_path == (
+        tmp_path / "config" / "transcription_glossary.json"
+    )
     assert paths.pdf_conversions_dir == tmp_path / "data" / "pdf_conversions"
     assert paths.presentation_conversions_dir == (
         tmp_path / "data" / "presentation_conversions"

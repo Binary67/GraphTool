@@ -3,7 +3,10 @@ import json
 import pytest
 
 from graphtool.ingestion import audio
-from graphtool.ingestion.audio import convert_audio_to_markdown
+from graphtool.ingestion.audio import (
+    convert_audio_to_markdown,
+    load_audio_transcription_terms,
+)
 from graphtool.source import source_key
 
 
@@ -59,20 +62,30 @@ def test_convert_audio_chunks_transcribes_and_assembles_markdown(
         "Shared boundary words remain exactly the same. New section facts."
     )
     transcriber = FakeTranscriber([first_transcript, second_transcript])
+    terms = ["HIP-SA (pronounced \"hip sah\")", "Aishwarya Rao"]
 
     markdown = convert_audio_to_markdown(
         path,
         "documents/recordings/quarterly-review.mp3",
         transcriber,
         tmp_path / "cache",
+        terms,
     )
 
     assert render_calls == [
         (0, 1_205_000),
         (1_200_000, 2_400_000),
     ]
-    assert transcriber.calls[0][1] is None
-    assert transcriber.calls[1][1] == first_transcript
+    glossary_prompt = (
+        "Expected proper nouns and exact spellings:\n"
+        '- HIP-SA (pronounced "hip sah")\n'
+        "- Aishwarya Rao\n"
+        "Use these spellings only when they match the spoken audio."
+    )
+    assert transcriber.calls[0][1] == glossary_prompt
+    assert transcriber.calls[1][1] == (
+        f"{glossary_prompt}\n\nPrevious transcript context:\n{first_transcript}"
+    )
     assert markdown == (
         "# Transcript: quarterly-review.mp3\n\n"
         "## 00:00:00\n\n"
@@ -95,6 +108,7 @@ def test_convert_audio_uses_complete_cache_without_external_tools(
         "documents/recordings/recording.mp3",
         FakeTranscriber(["Cached transcript."]),
         cache_dir,
+        [],
     )
     monkeypatch.setattr(
         audio.shutil,
@@ -108,6 +122,7 @@ def test_convert_audio_uses_complete_cache_without_external_tools(
         "documents/recordings/recording.mp3",
         transcriber,
         cache_dir,
+        [],
     )
 
     assert actual == expected
@@ -133,6 +148,7 @@ def test_convert_audio_resumes_completed_chunks_after_failure(
                 RuntimeError("request failed"),
             ]),
             cache_dir,
+            [],
         )
 
     resumed = FakeTranscriber(["Second chunk."])
@@ -141,6 +157,7 @@ def test_convert_audio_resumes_completed_chunks_after_failure(
         source,
         resumed,
         cache_dir,
+        [],
     )
 
     assert render_calls == [
@@ -165,6 +182,7 @@ def test_convert_audio_invalidates_cache_when_model_changes(monkeypatch, tmp_pat
         source,
         FakeTranscriber(["First."], model="transcribe-a"),
         cache_dir,
+        [],
     )
 
     markdown = convert_audio_to_markdown(
@@ -172,6 +190,7 @@ def test_convert_audio_invalidates_cache_when_model_changes(monkeypatch, tmp_pat
         source,
         FakeTranscriber(["Second."], model="transcribe-b"),
         cache_dir,
+        [],
     )
 
     assert render_calls == [(0, 60_000), (0, 60_000)]
@@ -201,6 +220,7 @@ def test_convert_audio_reassembles_from_raw_chunks_when_assembly_changes(
             "Shared boundary words remain exactly the same. New facts.",
         ]),
         cache_dir,
+        [],
     )
     monkeypatch.setattr(
         audio,
@@ -214,6 +234,7 @@ def test_convert_audio_reassembles_from_raw_chunks_when_assembly_changes(
         source,
         transcriber,
         cache_dir,
+        [],
     )
 
     assert render_calls == [(0, 1_205_000), (1_200_000, 2_400_000)]
@@ -232,7 +253,71 @@ def test_convert_audio_fails_clearly_without_ffprobe(monkeypatch, tmp_path):
             "documents/recordings/recording.mp3",
             FakeTranscriber([]),
             tmp_path / "cache",
+            [],
         )
+
+
+def test_load_audio_transcription_terms_supports_optional_pronunciation(
+    tmp_path,
+):
+    glossary_path = tmp_path / "transcription_glossary.json"
+    glossary_path.write_text(
+        json.dumps(
+            {
+                "terms": [
+                    ' HIP-SA (pronounced "hip sah") ',
+                    "Aishwarya Rao",
+                ]
+            }
+        )
+    )
+
+    assert load_audio_transcription_terms(glossary_path) == [
+        'HIP-SA (pronounced "hip sah")',
+        "Aishwarya Rao",
+    ]
+
+
+def test_load_audio_transcription_terms_returns_empty_for_missing_file(
+    tmp_path,
+):
+    assert load_audio_transcription_terms(
+        tmp_path / "transcription_glossary.json"
+    ) == []
+
+
+def test_convert_audio_invalidates_cache_when_glossary_changes(
+    monkeypatch,
+    tmp_path,
+):
+    render_calls = _prepare(monkeypatch, 60_000)
+    path = tmp_path / "recording.mp3"
+    path.write_bytes(b"original-audio")
+    cache_dir = tmp_path / "cache"
+    source = "documents/recordings/recording.mp3"
+    convert_audio_to_markdown(
+        path,
+        source,
+        FakeTranscriber(["First."]),
+        cache_dir,
+        ["HIP-SA"],
+    )
+    transcriber = FakeTranscriber(["Second."])
+
+    markdown = convert_audio_to_markdown(
+        path,
+        source,
+        transcriber,
+        cache_dir,
+        ["HIP-ZA"],
+    )
+
+    assert render_calls == [(0, 60_000), (0, 60_000)]
+    assert "Second." in markdown
+    assert "- HIP-ZA" in transcriber.calls[0][1]
+    manifest_path = cache_dir / source_key(source) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["glossary_hash"]
 
 
 def test_render_chunk_normalizes_audio_and_checks_size(monkeypatch, tmp_path):

@@ -1,5 +1,5 @@
 from graphtool.corpus import synchronize_documents
-from graphtool.ingestion import load_documents
+from graphtool.ingestion import load_audio_transcription_terms, load_documents
 from graphtool.llm import load_azure_openai_config
 from graphtool.run_logging import configure_run_logger
 from graphtool.runtime import DEFAULT_MAX_LOG_FILES, create_runtime, default_paths
@@ -14,6 +14,9 @@ def main() -> None:
     try:
         config = load_azure_openai_config()
         runtime = create_runtime(config, paths=paths)
+        audio_transcription_terms = load_audio_transcription_terms(
+            runtime.paths.audio_transcription_glossary_path
+        )
         documents = load_documents(
             runtime.paths.documents_dir,
             source_root=runtime.paths.root,
@@ -22,6 +25,7 @@ def main() -> None:
             presentation_cache_dir=runtime.paths.presentation_conversions_dir,
             audio_transcriber=runtime.audio_transcriber,
             audio_cache_dir=runtime.paths.audio_transcriptions_dir,
+            audio_transcription_terms=audio_transcription_terms,
         )
         logger.info(
             "Loaded %s %s",

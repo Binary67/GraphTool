@@ -31,12 +31,17 @@ def test_main_synchronizes_documents_and_exports_visualizations(
         pdf_conversions_dir=tmp_path / "pdf-conversions",
         presentation_conversions_dir=tmp_path / "presentation-conversions",
         audio_transcriptions_dir=tmp_path / "audio-transcriptions",
+        audio_transcription_glossary_path=(
+            tmp_path / "config" / "transcription_glossary.json"
+        ),
         dropped_edges_path=tmp_path / "dropped_edges.jsonl",
         logs_dir=tmp_path / "logs",
         visualizations_dir=tmp_path / "visualizations",
     )
     config = SimpleNamespace(entity_resolution_min_candidate_similarity=0.8)
     runtime = FakeRuntime(paths)
+    paths.audio_transcription_glossary_path.parent.mkdir()
+    paths.audio_transcription_glossary_path.write_text('{"terms": []}')
     logger = Mock()
     visualization_path = paths.visualizations_dir / "knowledge-base.html"
 
@@ -90,6 +95,7 @@ def test_main_synchronizes_documents_and_exports_visualizations(
         presentation_cache_dir=paths.presentation_conversions_dir,
         audio_transcriber=runtime.audio_transcriber,
         audio_cache_dir=paths.audio_transcriptions_dir,
+        audio_transcription_terms=[],
     )
     ingest_module.synchronize_documents.assert_called_once_with(
         {"docs/guide.md": "# Guide\nText."},
