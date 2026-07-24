@@ -4,7 +4,6 @@ import pytest
 
 from graphtool.ingestion import audio
 from graphtool.ingestion.audio import convert_audio_to_markdown
-from graphtool.llm.types import AudioTranscript, AudioTranscriptSegment
 from graphtool.source import source_key
 
 
@@ -20,10 +19,6 @@ class FakeTranscriber:
         if isinstance(response, Exception):
             raise response
         return response
-
-
-def _transcript(text, *, segments=None):
-    return AudioTranscript(text=text, segments=segments or ())
 
 
 def _prepare(monkeypatch, duration_milliseconds):
@@ -60,23 +55,10 @@ def test_convert_audio_chunks_transcribes_and_assembles_markdown(
     path = tmp_path / "quarterly-review.mp3"
     path.write_bytes(b"original-audio")
     first_transcript = "Opening facts. Shared boundary words remain exactly the same."
-    first_segments = (
-        AudioTranscriptSegment(0, 60_000, "Opening facts."),
-        AudioTranscriptSegment(60_000, 1_205_000, "Shared boundary words remain exactly the same."),
-    )
     second_transcript = (
         "Shared boundary words remain exactly the same. New section facts."
     )
-    second_segments = (
-        AudioTranscriptSegment(0, 5_000, "Shared boundary words remain exactly the same."),
-        AudioTranscriptSegment(5_000, 1_200_000, "New section facts."),
-    )
-    transcriber = FakeTranscriber(
-        [
-            _transcript(first_transcript, segments=first_segments),
-            _transcript(second_transcript, segments=second_segments),
-        ]
-    )
+    transcriber = FakeTranscriber([first_transcript, second_transcript])
 
     markdown = convert_audio_to_markdown(
         path,
@@ -94,7 +76,7 @@ def test_convert_audio_chunks_transcribes_and_assembles_markdown(
     assert markdown == (
         "# Transcript: quarterly-review.mp3\n\n"
         "## 00:00:00\n\n"
-        "Opening facts.\nShared boundary words remain exactly the same.\n\n"
+        "Opening facts. Shared boundary words remain exactly the same.\n\n"
         "## 00:20:00\n\n"
         "New section facts.\n"
     )
@@ -111,7 +93,7 @@ def test_convert_audio_uses_complete_cache_without_external_tools(
     expected = convert_audio_to_markdown(
         path,
         "documents/recordings/recording.mp3",
-        FakeTranscriber([_transcript("Cached transcript.")]),
+        FakeTranscriber(["Cached transcript."]),
         cache_dir,
     )
     monkeypatch.setattr(
@@ -136,7 +118,6 @@ def test_convert_audio_resumes_completed_chunks_after_failure(
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setattr(audio.time, "sleep", lambda seconds: None)
     render_calls = _prepare(monkeypatch, 40 * 60 * 1000)
     path = tmp_path / "recording.mp3"
     path.write_bytes(b"original-audio")
@@ -148,15 +129,13 @@ def test_convert_audio_resumes_completed_chunks_after_failure(
             path,
             source,
             FakeTranscriber([
-                _transcript("First chunk."),
-                RuntimeError("request failed"),
-                RuntimeError("request failed"),
+                "First chunk.",
                 RuntimeError("request failed"),
             ]),
             cache_dir,
         )
 
-    resumed = FakeTranscriber([_transcript("Second chunk.")])
+    resumed = FakeTranscriber(["Second chunk."])
     markdown = convert_audio_to_markdown(
         path,
         source,
@@ -184,14 +163,14 @@ def test_convert_audio_invalidates_cache_when_model_changes(monkeypatch, tmp_pat
     convert_audio_to_markdown(
         path,
         source,
-        FakeTranscriber([_transcript("First.")], model="transcribe-a"),
+        FakeTranscriber(["First."], model="transcribe-a"),
         cache_dir,
     )
 
     markdown = convert_audio_to_markdown(
         path,
         source,
-        FakeTranscriber([_transcript("Second.")], model="transcribe-b"),
+        FakeTranscriber(["Second."], model="transcribe-b"),
         cache_dir,
     )
 
@@ -200,8 +179,46 @@ def test_convert_audio_invalidates_cache_when_model_changes(monkeypatch, tmp_pat
     manifest_path = cache_dir / source_key(source) / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["model"] == "transcribe-b"
+    assert manifest["assembly_revision"] == audio.AUDIO_ASSEMBLY_REVISION
     assert manifest["complete"] is True
     assert manifest["markdown_hash"]
+
+
+def test_convert_audio_reassembles_from_raw_chunks_when_assembly_changes(
+    monkeypatch,
+    tmp_path,
+):
+    render_calls = _prepare(monkeypatch, 40 * 60 * 1000)
+    path = tmp_path / "recording.mp3"
+    path.write_bytes(b"original-audio")
+    cache_dir = tmp_path / "cache"
+    source = "documents/recordings/recording.mp3"
+    convert_audio_to_markdown(
+        path,
+        source,
+        FakeTranscriber([
+            "Opening facts. Shared boundary words remain exactly the same.",
+            "Shared boundary words remain exactly the same. New facts.",
+        ]),
+        cache_dir,
+    )
+    monkeypatch.setattr(
+        audio,
+        "AUDIO_ASSEMBLY_REVISION",
+        audio.AUDIO_ASSEMBLY_REVISION + 1,
+    )
+    transcriber = FakeTranscriber([])
+
+    markdown = convert_audio_to_markdown(
+        path,
+        source,
+        transcriber,
+        cache_dir,
+    )
+
+    assert render_calls == [(0, 1_205_000), (1_200_000, 2_400_000)]
+    assert transcriber.calls == []
+    assert markdown.count("Shared boundary words remain exactly the same.") == 1
 
 
 def test_convert_audio_fails_clearly_without_ffprobe(monkeypatch, tmp_path):
@@ -262,83 +279,32 @@ def test_chunk_boundaries_do_not_create_tiny_overlap_only_chunk():
     ]
 
 
-def test_transcribe_with_retry_succeeds_after_transient_failure(monkeypatch, tmp_path):
-    sleep_calls = []
-    monkeypatch.setattr(audio.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+def test_fuzzy_overlap_removes_exact_boundary_text():
+    previous = "Opening facts. Shared boundary words remain exactly the same."
+    current = "Shared boundary words remain exactly the same. New section facts."
 
-    chunk_path = tmp_path / "chunk.mp3"
-    chunk_path.write_bytes(b"audio")
-    transcriber = FakeTranscriber([
-        RuntimeError("transient failure"),
-        _transcript("Recovered transcript."),
-    ])
-    result = audio._transcribe_with_retry(
-        transcriber,
-        chunk_path,
-        prompt="context",
-        source="documents/rec.mp3",
-        chunk_index=0,
+    result = audio._remove_fuzzy_overlap(previous, current)
+
+    assert result == "New section facts."
+
+
+def test_fuzzy_overlap_handles_asr_substitutions_and_insertions():
+    previous = (
+        "The report confirms revenue grew by twenty percent compared with last year."
+    )
+    current = (
+        "Revenue grew by 20% compared with the last year. Margins also improved."
     )
 
-    assert result.text == "Recovered transcript."
-    assert len(transcriber.calls) == 2
-    assert sleep_calls == [2.0]
+    result = audio._remove_fuzzy_overlap(previous, current)
+
+    assert result == "Margins also improved."
 
 
-def test_transcribe_with_retry_exhausts_attempts_and_reraises(monkeypatch, tmp_path):
-    sleep_calls = []
-    monkeypatch.setattr(audio.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+def test_fuzzy_overlap_preserves_current_text_when_confidence_is_low():
+    previous = "Nothing related appears at this particular recording boundary."
+    current = "A completely different section begins with unique material."
 
-    chunk_path = tmp_path / "chunk.mp3"
-    chunk_path.write_bytes(b"audio")
-    transcriber = FakeTranscriber([
-        RuntimeError("transient failure"),
-        RuntimeError("transient failure"),
-        RuntimeError("transient failure"),
-    ])
-    with pytest.raises(RuntimeError, match="transient failure"):
-        audio._transcribe_with_retry(
-            transcriber,
-            chunk_path,
-            prompt=None,
-            source="documents/rec.mp3",
-            chunk_index=1,
-        )
+    result = audio._remove_fuzzy_overlap(previous, current)
 
-    assert len(transcriber.calls) == 3
-    assert sleep_calls == [2.0, 4.0]
-
-
-def test_segment_dedup_drops_overlap_segments_by_timestamp():
-    chunk = audio.AudioTranscriptChunk(
-        index=1,
-        start_milliseconds=1_200_000,
-        end_milliseconds=2_400_000,
-        text="Full transcript text.",
-        segments=[
-            AudioTranscriptSegment(0, 3_000, "Overlap content."),
-            AudioTranscriptSegment(5_000, 60_000, "Non-overlap content."),
-            AudioTranscriptSegment(60_000, 1_200_000, "More content."),
-        ],
-    )
-
-    result = audio._segment_text_after_overlap(chunk)
-
-    assert result == "Non-overlap content.\nMore content."
-
-
-def test_segment_dedup_keeps_all_segments_for_first_chunk():
-    chunk = audio.AudioTranscriptChunk(
-        index=0,
-        start_milliseconds=0,
-        end_milliseconds=60_000,
-        text="Full transcript text.",
-        segments=[
-            AudioTranscriptSegment(0, 1_000, "First."),
-            AudioTranscriptSegment(1_000, 2_000, "Second."),
-        ],
-    )
-
-    result = audio._segment_text_after_overlap(chunk)
-
-    assert result == "First.\nSecond."
+    assert result == current

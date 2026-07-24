@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from graphtool.llm.azure_openai import (
     AGENT_MAX_RETRIES,
     AGENT_REQUEST_TIMEOUT_SECONDS,
+    AUDIO_TRANSCRIPTION_MAX_RETRIES,
+    AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAIAudioTranscriber,
     AzureOpenAIClient,
     create_azure_openai_agent_model,
@@ -29,9 +31,11 @@ class FakeResponses:
 class FakeOpenAI:
     instances = []
 
-    def __init__(self, *, base_url, api_key):
+    def __init__(self, *, base_url, api_key, timeout=None, max_retries=None):
         self.base_url = base_url
         self.api_key = api_key
+        self.timeout = timeout
+        self.max_retries = max_retries
         self.responses = FakeResponses()
         self.embeddings = FakeEmbeddings()
         self.audio = FakeAudio()
@@ -77,13 +81,6 @@ class FakeAudio:
         self.transcriptions = FakeTranscriptions()
 
 
-class FakeTranscriptionSegment:
-    def __init__(self, start, end, text):
-        self.start = start
-        self.end = end
-        self.text = text
-
-
 class FakeTranscriptions:
     def __init__(self):
         self.create_calls = []
@@ -93,12 +90,7 @@ class FakeTranscriptions:
         return type(
             "Transcription",
             (),
-            {
-                "text": "transcribed audio",
-                "segments": [
-                    FakeTranscriptionSegment(0.0, 1.0, "transcribed audio"),
-                ],
-            },
+            {"text": "transcribed audio"},
         )()
 
 
@@ -190,15 +182,14 @@ def test_transcribes_audio_with_dedicated_deployment(monkeypatch, tmp_path):
     transcript = transcriber.transcribe_audio(path, prompt="Previous context")
 
     assert transcriber.transcription_model == "transcription-deployment"
-    assert transcript.text == "transcribed audio"
-    assert len(transcript.segments) == 1
-    assert transcript.segments[0].start_milliseconds == 0
-    assert transcript.segments[0].end_milliseconds == 1000
-    assert transcript.segments[0].text == "transcribed audio"
-    call = FakeOpenAI.instances[0].audio.transcriptions.create_calls[0]
+    assert transcript == "transcribed audio"
+    client = FakeOpenAI.instances[0]
+    assert client.timeout == AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS
+    assert client.max_retries == AUDIO_TRANSCRIPTION_MAX_RETRIES
+    call = client.audio.transcriptions.create_calls[0]
     assert call["model"] == "transcription-deployment"
     assert call["prompt"] == "Previous context"
-    assert call["response_format"] == "verbose_json"
+    assert call["response_format"] == "json"
     assert call["file"].name == str(path)
     assert call["file"].closed is True
 

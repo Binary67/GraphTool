@@ -11,8 +11,6 @@ from graphtool.llm.azure_openai import (
 from graphtool.llm.base import AudioTranscriptionClient, EmbeddingClient, LLMClient
 from graphtool.llm.config import AzureOpenAIConfig, ConfigError, load_azure_openai_config
 from graphtool.llm.types import (
-    AudioTranscript,
-    AudioTranscriptSegment,
     LLMContentPart,
     LLMImageContent,
     LLMMessage,
@@ -22,8 +20,6 @@ from graphtool.llm.types import (
 
 __all__ = [
     "AudioTranscriptionClient",
-    "AudioTranscript",
-    "AudioTranscriptSegment",
     "AGENT_MAX_RETRIES",
     "AGENT_REQUEST_TIMEOUT_SECONDS",
     "AzureOpenAIAudioTranscriber",

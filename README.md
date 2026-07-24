@@ -53,13 +53,15 @@ structured output. Password-protected PDFs are not supported.
 GraphTool accepts `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.ogg`,
 `.wav`, and `.webm` files. Audio is normalized to mono 16 kHz MP3 at 64 kbps,
 split into approximately 20-minute chunks with five seconds of overlap, and
-transcribed sequentially with `AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT`.
+transcribed sequentially with `AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT`. Overlap
+is reconciled from bounded transcript windows so minor transcription variation
+does not duplicate boundary text.
 
-Chunk transcripts and assembled Markdown are cached under
+Raw chunk transcripts and assembled Markdown are cached separately under
 `data/audio_transcriptions/`. This directory is generated data; put original
 recordings under `documents/`, preferably `documents/recordings/`. Interrupted
-conversions resume from the last cached chunk. The configured deployment should
-use `gpt-4o-transcribe`.
+conversions resume from the last cached chunk, and assembly changes reuse raw
+transcripts. The configured deployment should use `gpt-4o-transcribe`.
 
 ## Knowledge agent
 

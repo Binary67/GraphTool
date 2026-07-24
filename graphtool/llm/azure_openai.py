@@ -9,8 +9,6 @@ from openai import OpenAI
 
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.llm.types import (
-    AudioTranscript,
-    AudioTranscriptSegment,
     LLMImageContent,
     LLMMessage,
     LLMTextContent,
@@ -20,6 +18,8 @@ from graphtool.llm.types import (
 T = TypeVar("T")
 AGENT_REQUEST_TIMEOUT_SECONDS = 60
 AGENT_MAX_RETRIES = 1
+AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS = 10 * 60
+AUDIO_TRANSCRIPTION_MAX_RETRIES = 3
 
 
 class AzureOpenAIClient:
@@ -75,7 +75,12 @@ class AzureOpenAIClient:
 class AzureOpenAIAudioTranscriber:
     def __init__(self, config: AzureOpenAIConfig) -> None:
         self._deployment = config.transcription_deployment
-        self._client = OpenAI(base_url=config.endpoint, api_key=config.api_key)
+        self._client = OpenAI(
+            base_url=config.endpoint,
+            api_key=config.api_key,
+            timeout=AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_SECONDS,
+            max_retries=AUDIO_TRANSCRIPTION_MAX_RETRIES,
+        )
 
     @property
     def transcription_model(self) -> str:
@@ -86,23 +91,15 @@ class AzureOpenAIAudioTranscriber:
         path: str | Path,
         *,
         prompt: str | None = None,
-    ) -> AudioTranscript:
+    ) -> str:
         with Path(path).open("rb") as audio_file:
             response = self._client.audio.transcriptions.create(
                 model=self._deployment,
                 file=audio_file,
                 prompt=prompt,
-                response_format="verbose_json",
+                response_format="json",
             )
-        segments = tuple(
-            AudioTranscriptSegment(
-                start_milliseconds=round(segment.start * 1000),
-                end_milliseconds=round(segment.end * 1000),
-                text=segment.text,
-            )
-            for segment in response.segments
-        )
-        return AudioTranscript(text=response.text, segments=segments)
+        return response.text
 
 
 def create_azure_openai_agent_model(
