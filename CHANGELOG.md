@@ -1,116 +1,41 @@
 # Changelog
 
-## [Unreleased]
+This changelog records changes from July 24, 2026 onward. Each entry explains
+the intention behind the work and the features or code changes that implemented
+it.
 
-### Added
+## July 24, 2026
 
-- Added exact document content hashing and per-source node and edge provenance.
-- Added incremental document synchronization for additions, changes, and deletions.
-- Added source-filtered knowledge graph projections.
-- Added semantic entity resolution using embedding candidates and LLM-assisted
-  merge decisions when combining document graphs.
-- Added cached graph and chunk embeddings with batched embedding requests.
-- Added JSONL audit logging for generated edges that reference missing nodes.
-- Added a canonical node taxonomy with persisted suggestions for unclassified
-  node types.
-- Added hybrid BM25 and semantic chunk retrieval.
-- Added framework-neutral knowledge-base search with source reporting and
-  structured retrieval results.
-- Added centralized runtime, path, client, and store construction.
-- Added a read-only knowledge agent with model-bound knowledge search and
-  authorized adjacent-chunk retrieval tools.
+### Intention
 
-### Changed
+- Let users limit a question to a known document folder using natural language,
+  without requiring them to know or enter an internal source path.
+- Preserve broad knowledge-base search as the default when the user does not
+  request a folder.
+- Prevent an unknown or ambiguous folder request from silently searching the
+  complete knowledge base.
+- Keep folder-scoped answers grounded only in document chunks and graph
+  relationships supported by the selected folder.
 
-- Moved per-document and canonical knowledge graphs from whole-file JSON storage
-  to normalized, incrementally updated SQLite tables.
-- Added indexed node and edge contribution storage so changed sources affect only
-  their own provenance and dependent canonical records.
-- Changed node and chunk embedding persistence to targeted upserts and deletes.
-- Committed graph, chunk, taxonomy, and embedding updates through one shared
-  SQLite transaction and deferred embedding writes until final persistence.
-- Replaced full-table knowledge-base comparisons during synchronization with
-  source-scoped canonical node and edge deltas.
-- Reused normalized `float32` candidate matrices during exact semantic entity
-  resolution and added deterministic partial top-k selection.
-- Consolidated knowledge-base retrieval behind a single hybrid runtime search API.
-- Replaced the single Azure OpenAI model configuration with separate text and
-  embedding deployment settings.
-- Added configuration for embedding batch size and the entity-resolution
-  candidate similarity threshold.
-- Improved graph extraction to exclude document-structure and metadata nodes,
-  resolve repeated entities, and deduplicate relationships.
-- Kept stored graphs, chunks, embeddings, taxonomy suggestions, and generated
-  visualizations synchronized with document additions, updates, and deletions.
-- Updated the main workflow to synchronize documents, export visualizations,
-  and search the knowledge base through the shared runtime.
+### Changes implemented
 
-### Fixed
-
-- Scoped generated node references to their source chunks to prevent collisions.
-- Validated unique extracted node references and retried invalid structured LLM
-  responses once.
-
-### Removed
-
-- Removed the single-text `EmbeddingClient.embed_text` API in favor of batched
-  `embed_texts` calls.
-- Removed unused model metadata from taxonomy suggestion records. Existing
-  `data/taxonomy_suggestions.json` files must be deleted and regenerated.
-
-## [0.6.0]
-
-### Added
-
-- Added run logging with log rotation.
-- Added cached combined knowledge base graph storage on disk.
-
-## [0.5.0]
-
-### Added
-
-- Added PyVis-based HTML knowledge graph visualization export.
-- Added knowledge base visualization helpers.
-
-### Changed
-
-- Extracted corpus loading and visualization workflow out of `main.py`.
-
-## [0.4.0]
-
-### Added
-
-- Added multi-document markdown loading.
-- Added per-document graph and chunk storage.
-- Added source-key handling for stable document identifiers.
-- Added skipping for already-processed documents.
-
-## [0.3.0]
-
-### Added
-
-- Added BM25 retrieval over graph nodes, relationships, and chunks.
-- Added formatted retrieval context with source tracking.
-
-## [0.2.0]
-
-### Added
-
-- Added knowledge graph node, edge, metadata, and graph models.
-- Added JSON graph storage.
-- Added LLM-based graph generation.
-- Added markdown chunking and chunk JSON storage.
-- Added chunk provenance on generated nodes and edges.
-
-### Changed
-
-- Tightened graph extraction schema used with the LLM.
-
-## [0.1.0]
-
-### Added
-
-- Added initial Python project structure.
-- Added Azure OpenAI client abstraction.
-- Added Azure OpenAI configuration loading.
-- Added initial package metadata and tests.
+- Added `config/knowledge_scopes.json` as the catalog that maps user-facing scope
+  names such as `work`, `personal`, and `finance` to folders under `documents/`.
+- Added catalog loading and validation, including normalized scope names, safe
+  document-folder paths, folder-boundary matching, and a reserved `all` name for
+  unrestricted search.
+- Extended question decomposition to select one catalog scope only when the user
+  explicitly requests a folder. Questions without a folder restriction search
+  all documents.
+- Added clarification behavior for folder requests that do not match the
+  catalog.
+- Stored the selected scope once for the question and automatically applied it
+  to every knowledge search performed for its subquestions.
+- Added scoped runtime retrieval that filters both document chunks and
+  source-provenance graph entities and relationships.
+- Added per-scope retrieval caching while retaining the existing unrestricted
+  search index.
+- Documented the scope catalog and natural-language behavior in `README.md`.
+- Added focused tests for catalog validation, default unrestricted search,
+  selected-scope enforcement, unknown-scope clarification, source filtering, and
+  graph-path filtering.
