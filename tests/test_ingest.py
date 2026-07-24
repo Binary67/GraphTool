@@ -7,6 +7,7 @@ import ingest as ingest_module
 class FakeRuntime:
     def __init__(self, paths) -> None:
         self.paths = paths
+        self.corpus_stores = object()
         self.graph_store = object()
         self.chunk_store = object()
         self.fast_llm = object()
@@ -92,16 +93,10 @@ def test_main_synchronizes_documents_and_exports_visualizations(
     )
     ingest_module.synchronize_documents.assert_called_once_with(
         {"docs/guide.md": "# Guide\nText."},
-        runtime.graph_store,
-        runtime.chunk_store,
+        runtime.corpus_stores,
         runtime.fast_llm,
-        knowledge_base_store=runtime.knowledge_base_store,
-        graph_embedding_store=runtime.graph_embedding_store,
-        knowledge_base_embedding_store=runtime.knowledge_base_embedding_store,
-        chunk_embedding_store=runtime.chunk_embedding_store,
         chunk_extraction_store=runtime.chunk_extraction_store,
         dropped_edges_path=paths.dropped_edges_path,
-        taxonomy_suggestion_store=runtime.taxonomy_suggestion_store,
         min_candidate_similarity=0.8,
     )
     ingest_module.export_knowledge_base_visualizations.assert_called_once_with(

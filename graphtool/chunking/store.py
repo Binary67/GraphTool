@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from graphtool.chunking.types import Chunk
-from graphtool.storage import as_connection
+from graphtool.storage import as_connection, transaction
 
 _SELECT_CHUNKS = (
     "SELECT id, source, idx, text, heading_path, page_start, page_end "
@@ -33,7 +33,7 @@ class SqliteChunkStore:
             )
             for chunk in chunks
         ]
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
             self._conn.executemany(
                 "INSERT INTO chunks "
@@ -98,7 +98,7 @@ class SqliteChunkStore:
         return [self._row_to_chunk(row) for row in rows]
 
     def delete(self, source: str) -> None:
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute("DELETE FROM chunks WHERE source = ?", (source,))
 
     @staticmethod

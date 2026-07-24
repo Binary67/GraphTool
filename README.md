@@ -106,6 +106,14 @@ Call `runtime.prepare_search()` after each document synchronization. It loads th
 current knowledge base, prepares reusable search indexes, and refreshes stale chunk
 embeddings before queries are served.
 
+Document graphs, canonical entities, relationships, provenance, aliases, chunks,
+and embeddings are stored in `data/graphtool.db`. Graph and embedding updates use
+row-level SQLite upserts and targeted deletes. Semantic entity resolution loads
+normalized `float32` embedding matrices by compatible entity set and reuses them
+for exact cosine-similarity candidate search. Corpus synchronization stages
+computed embeddings and commits all SQLite-backed artifacts through one shared
+transaction.
+
 Calls using the same thread ID share conversation history while the process is
 running. By default, older history is summarized when the conversation reaches
 approximately 256,000 tokens, while the most recent 64,000 tokens remain

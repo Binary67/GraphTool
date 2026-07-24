@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from graphtool.graph.types import KnowledgeGraph
-from graphtool.storage import as_connection
+from graphtool.storage import as_connection, transaction
 
 UNCLASSIFIED_NODE_TYPE = "unclassified"
 
@@ -183,14 +183,14 @@ class SqliteTaxonomySuggestionStore:
     def append_many(self, records: Sequence[TaxonomySuggestionRecord]) -> None:
         if not records:
             return
-        with self._conn:
+        with transaction(self._conn):
             self._conn.executemany(
                 _INSERT_SUGGESTION_SQL,
                 [self._row_tuple(record) for record in records],
             )
 
     def save(self, records: Sequence[TaxonomySuggestionRecord]) -> None:
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute("DELETE FROM taxonomy_suggestions")
             self._conn.executemany(
                 _INSERT_SUGGESTION_SQL,
@@ -216,7 +216,7 @@ class SqliteTaxonomySuggestionStore:
         source: str,
         records: Sequence[TaxonomySuggestionRecord],
     ) -> None:
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute(
                 "DELETE FROM taxonomy_suggestions WHERE source = ?", (source,)
             )
@@ -226,7 +226,7 @@ class SqliteTaxonomySuggestionStore:
             )
 
     def delete_source(self, source: str) -> None:
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute(
                 "DELETE FROM taxonomy_suggestions WHERE source = ?", (source,)
             )

@@ -1,17 +1,29 @@
 from pathlib import Path
+from typing import Protocol
 
 from graphtool.graph.combiner import combine_knowledge_graphs
-from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.source import source_key
 from graphtool.visualization.pyvis import export_graph_html
 
 
+class GraphStore(Protocol):
+    def load_all(self) -> list[KnowledgeGraph]: ...
+
+
+class KnowledgeBaseStore(Protocol):
+    def exists(self) -> bool: ...
+
+    def load(self) -> KnowledgeGraph: ...
+
+    def replace_all(self, graph: KnowledgeGraph) -> None: ...
+
+
 def export_knowledge_base_visualizations(
-    graph_store: JsonGraphStore,
+    graph_store: GraphStore,
     output_dir: str | Path,
     *,
-    knowledge_base_store: JsonKnowledgeBaseStore | None = None,
+    knowledge_base_store: KnowledgeBaseStore | None = None,
 ) -> list[Path]:
     path = Path(output_dir)
     graphs = graph_store.load_all()
@@ -45,7 +57,7 @@ def export_knowledge_base_visualizations(
 
 def _load_combined_graph(
     graphs: list[KnowledgeGraph],
-    knowledge_base_store: JsonKnowledgeBaseStore | None,
+    knowledge_base_store: KnowledgeBaseStore | None,
 ) -> KnowledgeGraph:
     if knowledge_base_store is None:
         return combine_knowledge_graphs(graphs)
@@ -53,5 +65,5 @@ def _load_combined_graph(
         return knowledge_base_store.load()
 
     graph = combine_knowledge_graphs(graphs)
-    knowledge_base_store.save(graph)
+    knowledge_base_store.replace_all(graph)
     return graph

@@ -1,20 +1,18 @@
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Protocol
 
 import numpy as np
 
 from graphtool.graph.embedding_store import NodeEmbeddingRecord
+from graphtool.graph.taxonomy import normalize_type_name
 from graphtool.graph.types import KnowledgeGraph, Node
 from graphtool.llm.base import EmbeddingClient
 
 
 class EmbeddingStore(Protocol):
     def load(self) -> dict[str, NodeEmbeddingRecord]:
-        ...
-
-    def save(self, records: Mapping[str, NodeEmbeddingRecord]) -> None:
         ...
 
 
@@ -36,6 +34,10 @@ class ResolutionEmbeddings:
         self._prefetched_vectors: dict[tuple[str, str], list[float]] = {}
         self._node_inputs: dict[int, tuple[str, str]] = {}
         self._normalized_vectors: dict[tuple[str, str], np.ndarray] = {}
+        self._candidate_matrices: dict[
+            str,
+            tuple[tuple[tuple[str, str], ...], np.ndarray],
+        ] = {}
 
     def prepare(
         self,
@@ -45,6 +47,7 @@ class ResolutionEmbeddings:
         self._relationship_contexts = _build_relationship_contexts(graphs)
         self._prefetched_vectors = dict(self._reusable_vectors)
         self._node_inputs = {}
+        self._candidate_matrices = {}
         self._prefetch(incoming_nodes)
 
     def candidates(
@@ -61,24 +64,42 @@ class ResolutionEmbeddings:
         incoming_record = self._ensure([node])[0]
         candidate_records = self._ensure(canonical_nodes)
         incoming_vector = self._normalized_vector(incoming_record)
-        candidate_vectors = np.stack(
-            [self._normalized_vector(record) for record in candidate_records]
+        matrix_key = tuple(
+            (record.node_id, record.embedding_input_hash)
+            for record in candidate_records
         )
+        bucket = normalize_type_name(node.type)
+        cached_matrix = self._candidate_matrices.get(bucket)
+        if cached_matrix is None or cached_matrix[0] != matrix_key:
+            candidate_vectors = np.stack(
+                [
+                    self._normalized_vector(record)
+                    for record in candidate_records
+                ]
+            )
+            self._candidate_matrices[bucket] = (matrix_key, candidate_vectors)
+        else:
+            candidate_vectors = cached_matrix[1]
         scores = candidate_vectors @ incoming_vector
-        scored = []
-        for candidate, score in zip(
-            canonical_nodes,
-            scores,
-            strict=True,
-        ):
-            if score >= min_similarity:
-                scored.append((candidate, float(score)))
-
-        scored.sort(key=lambda item: (-item[1], item[0].id))
-        return scored[:top_k]
+        eligible = np.flatnonzero(scores >= min_similarity)
+        if eligible.size > top_k:
+            local = np.argpartition(scores[eligible], -top_k)[-top_k:]
+            cutoff = scores[eligible[local]].min()
+            eligible = eligible[scores[eligible] >= cutoff]
+        scored = [
+            (canonical_nodes[int(index)], float(scores[index]))
+            for index in eligible
+        ]
+        return sorted(scored, key=lambda item: (-item[1], item[0].id))[:top_k]
 
     def invalidate(self, node_id: str) -> None:
-        self._records.pop(node_id, None)
+        record = self._records.pop(node_id, None)
+        if record is not None:
+            self._normalized_vectors.pop(
+                (record.embedding_model, record.embedding_input_hash),
+                None,
+            )
+        self._candidate_matrices = {}
 
     def finalize(self, canonical_nodes: Sequence[Node]) -> None:
         if self._store is None:
@@ -88,7 +109,10 @@ class ResolutionEmbeddings:
             node.id: self._records[node.id]
             for node in canonical_nodes
         }
-        self._store.save(self._records)
+
+    @property
+    def records(self) -> dict[str, NodeEmbeddingRecord]:
+        return dict(self._records)
 
     def _prefetch(self, nodes: Sequence[Node]) -> None:
         embedding_model = self._client.embedding_model
@@ -186,7 +210,7 @@ class ResolutionEmbeddings:
         cached = self._normalized_vectors.get(key)
         if cached is not None:
             return cached
-        vector = np.asarray(record.vector, dtype=np.float64)
+        vector = np.asarray(record.vector, dtype=np.float32)
         norm = np.linalg.norm(vector)
         normalized = vector if norm == 0.0 else vector / norm
         self._normalized_vectors[key] = normalized

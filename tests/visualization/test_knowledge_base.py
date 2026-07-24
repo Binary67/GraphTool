@@ -2,7 +2,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.sqlite_store import (
+    SqliteGraphStore as JsonGraphStore,
+    SqliteKnowledgeBaseStore as JsonKnowledgeBaseStore,
+)
 from graphtool.graph.types import GraphMetadata, KnowledgeGraph, Node
 from graphtool.source import source_key
 from graphtool.visualization import export_knowledge_base_visualizations
@@ -71,7 +74,7 @@ def test_export_knowledge_base_visualizations_uses_cached_combined_graph(tmp_pat
     graph_store = JsonGraphStore(tmp_path / "graphs")
     graph_store.save(_graph("documents/a.md", "alpha", "Alpha"))
     knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    knowledge_base_store.save(
+    knowledge_base_store.replace_all(
         KnowledgeGraph(
             nodes=[Node(id="cached", label="Cached Only", type="Concept")],
             edges=[],

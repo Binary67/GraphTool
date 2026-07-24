@@ -3,13 +3,14 @@ from pathlib import Path
 
 from graphtool.chunking import SqliteChunkStore
 from graphtool.chunking.types import Chunk
+from graphtool.corpus_stores import SqliteCorpusStores
 from graphtool.graph import (
     JsonChunkExtractionStore,
-    JsonGraphStore,
-    JsonKnowledgeBaseStore,
     KnowledgeGraph,
     SqliteEmbeddingStore,
+    SqliteGraphStore,
     SqliteGraphEmbeddingStore,
+    SqliteKnowledgeBaseStore,
     SqliteTaxonomySuggestionStore,
 )
 from graphtool.llm import AzureOpenAIAudioTranscriber, AzureOpenAIClient
@@ -36,8 +37,6 @@ class GraphToolPaths:
     pdf_conversions_dir: Path
     presentation_conversions_dir: Path
     chunk_extractions_dir: Path
-    graphs_dir: Path
-    knowledge_base_path: Path
     db_path: Path
     dropped_edges_path: Path
     logs_dir: Path
@@ -47,14 +46,8 @@ class GraphToolPaths:
 @dataclass
 class GraphToolRuntime:
     paths: GraphToolPaths
-    graph_store: JsonGraphStore
-    knowledge_base_store: JsonKnowledgeBaseStore
-    graph_embedding_store: SqliteGraphEmbeddingStore
-    knowledge_base_embedding_store: SqliteEmbeddingStore
-    taxonomy_suggestion_store: SqliteTaxonomySuggestionStore
-    chunk_store: SqliteChunkStore
+    corpus_stores: SqliteCorpusStores
     chunk_extraction_store: JsonChunkExtractionStore
-    chunk_embedding_store: SqliteChunkEmbeddingStore
     fast_llm: AzureOpenAIClient
     audio_transcriber: AzureOpenAIAudioTranscriber
     _search_retriever: PreparedHybridRetriever | None = field(
@@ -70,6 +63,34 @@ class GraphToolRuntime:
                 "Search is not prepared. Call prepare_search after synchronization."
             )
         return self._search_retriever.retrieve(query, top_chunks=top_chunks)
+
+    @property
+    def graph_store(self) -> SqliteGraphStore:
+        return self.corpus_stores.graphs
+
+    @property
+    def knowledge_base_store(self) -> SqliteKnowledgeBaseStore:
+        return self.corpus_stores.knowledge_base
+
+    @property
+    def graph_embedding_store(self) -> SqliteGraphEmbeddingStore:
+        return self.corpus_stores.graph_embeddings
+
+    @property
+    def knowledge_base_embedding_store(self) -> SqliteEmbeddingStore:
+        return self.corpus_stores.knowledge_base_embeddings
+
+    @property
+    def taxonomy_suggestion_store(self) -> SqliteTaxonomySuggestionStore:
+        return self.corpus_stores.taxonomy_suggestions
+
+    @property
+    def chunk_store(self) -> SqliteChunkStore:
+        return self.corpus_stores.chunks
+
+    @property
+    def chunk_embedding_store(self) -> SqliteChunkEmbeddingStore:
+        return self.corpus_stores.chunk_embeddings
 
     def prepare_search(self) -> None:
         graph, chunks = self._search_inputs()
@@ -99,8 +120,6 @@ def default_paths(root: str | Path | None = None) -> GraphToolPaths:
         pdf_conversions_dir=data_dir / "pdf_conversions",
         presentation_conversions_dir=data_dir / "presentation_conversions",
         chunk_extractions_dir=data_dir / "chunk_extractions",
-        graphs_dir=data_dir / "graphs",
-        knowledge_base_path=data_dir / "knowledge_base.json",
         db_path=data_dir / "graphtool.db",
         dropped_edges_path=data_dir / "dropped_edges.jsonl",
         logs_dir=project_root / "logs",
@@ -117,18 +136,10 @@ def create_runtime(
     conn = open_database(runtime_paths.db_path)
     return GraphToolRuntime(
         paths=runtime_paths,
-        graph_store=JsonGraphStore(runtime_paths.graphs_dir),
-        knowledge_base_store=JsonKnowledgeBaseStore(
-            runtime_paths.knowledge_base_path
-        ),
-        graph_embedding_store=SqliteGraphEmbeddingStore(conn),
-        knowledge_base_embedding_store=SqliteEmbeddingStore(conn),
-        taxonomy_suggestion_store=SqliteTaxonomySuggestionStore(conn),
-        chunk_store=SqliteChunkStore(conn),
+        corpus_stores=SqliteCorpusStores.from_connection(conn),
         chunk_extraction_store=JsonChunkExtractionStore(
             runtime_paths.chunk_extractions_dir
         ),
-        chunk_embedding_store=SqliteChunkEmbeddingStore(conn),
         fast_llm=AzureOpenAIClient(
             config,
             text_deployment=config.fast_deployment,

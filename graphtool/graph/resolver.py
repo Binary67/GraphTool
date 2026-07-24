@@ -15,8 +15,6 @@ from graphtool.graph.provenance import (
 from graphtool.graph.resolution_embeddings import (
     EmbeddingStore,
     ResolutionEmbeddings,
-    embedding_input_hash,
-    node_embedding_text,
 )
 from graphtool.graph.resolution_merge import (
     dedupe_remapped_edges,
@@ -54,6 +52,10 @@ class SemanticEntityResolver:
         self._top_k = top_k
         self._merge_confidence_threshold = merge_confidence_threshold
         self._min_candidate_similarity = min_candidate_similarity
+
+    @property
+    def embedding_records(self) -> dict[str, NodeEmbeddingRecord]:
+        return self._embeddings.records
 
     def combine(self, graphs: Sequence[KnowledgeGraph]) -> KnowledgeGraph:
         return self._combine(None, graphs, resolve_within_graph=True)

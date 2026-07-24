@@ -130,7 +130,12 @@ def prepare_chunk_vectors(
             records_to_save[chunk_id] = record
             chunk_records[chunk_id] = record
         if chunk_embedding_store is not None:
-            chunk_embedding_store.save(records_to_save)
+            chunk_embedding_store.upsert(
+                {
+                    chunk_id: records_to_save[chunk_id]
+                    for chunk_id, _, _ in missing
+                }
+            )
 
     return {
         chunk_id: record.vector

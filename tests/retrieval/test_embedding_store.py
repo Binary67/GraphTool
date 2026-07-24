@@ -19,7 +19,7 @@ def test_delete_batches_ids_beyond_the_sql_variable_limit(tmp_path):
         )
         for i in range(1201)
     }
-    store.save(records)
+    store.upsert(records)
     conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500)
 
     store.delete(list(records))

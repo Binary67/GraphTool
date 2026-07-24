@@ -135,7 +135,7 @@ def test_graph_search_returns_relevant_two_hop_path_and_evidence():
 
 def test_graph_search_uses_cached_node_embeddings_for_semantic_seed(tmp_path):
     store = SqliteEmbeddingStore(open_database(tmp_path / "node_embeddings.db"))
-    store.save(
+    store.upsert(
         {
             "alpha": NodeEmbeddingRecord(
                 node_id="alpha",
@@ -164,7 +164,7 @@ def test_graph_search_uses_cached_node_embeddings_for_semantic_seed(tmp_path):
 
 def test_graph_search_ignores_cached_embeddings_from_another_model(tmp_path):
     store = SqliteEmbeddingStore(open_database(tmp_path / "node_embeddings.db"))
-    store.save(
+    store.upsert(
         {
             "alpha": NodeEmbeddingRecord(
                 node_id="alpha",

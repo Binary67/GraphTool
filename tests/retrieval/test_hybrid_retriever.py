@@ -33,7 +33,7 @@ class MemoryChunkEmbeddingStore:
     def load(self):
         return self.records
 
-    def save(self, records):
+    def upsert(self, records):
         self.records = dict(records)
 
 

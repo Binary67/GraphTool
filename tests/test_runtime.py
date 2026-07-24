@@ -69,8 +69,6 @@ def test_default_paths_match_project_layout(tmp_path):
         tmp_path / "data" / "presentation_conversions"
     )
     assert paths.chunk_extractions_dir == tmp_path / "data" / "chunk_extractions"
-    assert paths.graphs_dir == tmp_path / "data" / "graphs"
-    assert paths.knowledge_base_path == tmp_path / "data" / "knowledge_base.json"
     assert paths.db_path == tmp_path / "data" / "graphtool.db"
     assert paths.dropped_edges_path == tmp_path / "data" / "dropped_edges.jsonl"
     assert paths.logs_dir == tmp_path / "logs"
@@ -115,7 +113,7 @@ def test_search_uses_combined_graph_all_chunks_and_top_chunks(monkeypatch, tmp_p
     ]
     runtime.chunk_store.save(chunks[0].source, [chunks[0]])
     runtime.chunk_store.save(chunks[1].source, [chunks[1]])
-    runtime.knowledge_base_store.save(
+    runtime.knowledge_base_store.replace_all(
         KnowledgeGraph(
             nodes=[
                 Node(
@@ -168,7 +166,7 @@ def test_search_uses_runtime_embeddings_and_cache(monkeypatch, tmp_path):
         ),
     ]
     runtime.chunk_store.save("docs/deploy.md", chunks)
-    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
 
     runtime.prepare_search()
     result = runtime.search("install hangs", top_chunks=1)
@@ -190,7 +188,7 @@ def test_prepared_search_reuses_loaded_corpus_and_embeds_each_query_once(
         text="Setup stalls after authentication.",
     )
     runtime.chunk_store.save(chunk.source, [chunk])
-    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
     load_graph = Mock(wraps=runtime.knowledge_base_store.load)
     load_chunks = Mock(wraps=runtime.chunk_store.load_all)
     monkeypatch.setattr(runtime.knowledge_base_store, "load", load_graph)
@@ -223,7 +221,7 @@ def test_prepare_search_refreshes_the_retrieval_snapshot(monkeypatch, tmp_path):
             )
         ],
     )
-    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
     runtime.prepare_search()
 
     runtime.chunk_store.save(
@@ -265,7 +263,7 @@ def test_search_combines_direct_chunks_and_graph_paths(monkeypatch, tmp_path):
         ),
     ]
     runtime.chunk_store.save("docs/graph.md", chunks)
-    runtime.knowledge_base_store.save(
+    runtime.knowledge_base_store.replace_all(
         KnowledgeGraph(
             nodes=[
                 Node(
@@ -332,7 +330,7 @@ def test_search_requires_synchronized_knowledge_base(monkeypatch, tmp_path):
 
 def test_search_requires_preparation(monkeypatch, tmp_path):
     runtime = _runtime(monkeypatch, tmp_path)
-    runtime.knowledge_base_store.save(KnowledgeGraph(nodes=[], edges=[]))
+    runtime.knowledge_base_store.replace_all(KnowledgeGraph(nodes=[], edges=[]))
 
     with pytest.raises(RuntimeError, match="Call prepare_search"):
         runtime.search("validation")

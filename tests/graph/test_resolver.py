@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from typing import TypeVar, cast
 
+import graphtool.graph.resolution_embeddings as resolution_embeddings_module
 from graphtool.graph.embedding_store import NodeEmbeddingRecord, SqliteEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
 from graphtool.graph.resolution_embeddings import (
+    ResolutionEmbeddings,
     embedding_input_hash,
     node_embedding_text,
 )
@@ -47,6 +49,85 @@ class FakeLLM:
     def generate_structured(self, messages, response_model: type[T]) -> T:
         self.calls.append((list(messages), response_model))
         return cast(T, self.decisions[len(self.calls) - 1])
+
+
+def test_resolution_embeddings_reuses_candidate_matrix(monkeypatch):
+    client = FakeEmbeddingClient(
+        {
+            "Existing A": [1.0, 0.0],
+            "Existing B": [0.0, 1.0],
+            "Incoming A": [1.0, 0.0],
+            "Incoming B": [0.0, 1.0],
+        }
+    )
+    embeddings = ResolutionEmbeddings(client, None)
+    candidates = [
+        Node(id="a", label="Existing A", type="Concept"),
+        Node(id="b", label="Existing B", type="Concept"),
+    ]
+    incoming = [
+        Node(id="incoming-a", label="Incoming A", type="Concept"),
+        Node(id="incoming-b", label="Incoming B", type="Concept"),
+    ]
+    embeddings.prepare(
+        [KnowledgeGraph(nodes=[*candidates, *incoming], edges=[])],
+        incoming,
+    )
+    original_stack = resolution_embeddings_module.np.stack
+    stack_calls = 0
+
+    def tracked_stack(*args, **kwargs):
+        nonlocal stack_calls
+        stack_calls += 1
+        return original_stack(*args, **kwargs)
+
+    monkeypatch.setattr(resolution_embeddings_module.np, "stack", tracked_stack)
+
+    embeddings.candidates(incoming[0], candidates, min_similarity=0.0, top_k=1)
+    embeddings.candidates(incoming[1], candidates, min_similarity=0.0, top_k=1)
+
+    assert stack_calls == 1
+
+    embeddings.candidates(
+        incoming[1],
+        [
+            *candidates,
+            Node(id="c", label="Existing C", type="Concept"),
+        ],
+        min_similarity=0.0,
+        top_k=1,
+    )
+
+    assert stack_calls == 2
+    assert len(embeddings._candidate_matrices) == 1
+
+
+def test_resolution_embeddings_breaks_top_k_similarity_ties_by_node_id():
+    client = FakeEmbeddingClient(
+        {
+            "Candidate": [1.0, 0.0],
+            "Incoming": [1.0, 0.0],
+        }
+    )
+    embeddings = ResolutionEmbeddings(client, None)
+    candidates = [
+        Node(id=node_id, label=f"Candidate {node_id}", type="Concept")
+        for node_id in ("c", "a", "b")
+    ]
+    incoming = Node(id="incoming", label="Incoming", type="Concept")
+    embeddings.prepare(
+        [KnowledgeGraph(nodes=[*candidates, incoming], edges=[])],
+        [incoming],
+    )
+
+    matches = embeddings.candidates(
+        incoming,
+        candidates,
+        min_similarity=0.0,
+        top_k=2,
+    )
+
+    assert [node.id for node, _ in matches] == ["a", "b"]
 
 
 def test_resolver_merges_exact_id_and_preserves_aliases():
@@ -686,6 +767,8 @@ def test_resolver_reuses_matching_cached_embeddings(tmp_path):
             )
         ]
     )
+    assert store.load() == {}
+    store.upsert(resolver.embedding_records)
     first_call_count = len(embedding.calls)
 
     resolver = SemanticEntityResolver(FakeLLM(), embedding, store)
@@ -724,6 +807,7 @@ def test_resolver_reuses_embedding_record_with_matching_input_hash(tmp_path):
         None,
         [KnowledgeGraph(nodes=[node], edges=[])],
     )
+    store.upsert(resolver.embedding_records)
 
     assert embedding.calls == []
     assert store.load()[node.id].vector == [1.0, 0.0]
@@ -789,6 +873,7 @@ def test_combine_into_resolves_only_new_nodes_against_existing(tmp_path):
         store,
     )
     seeding.combine([existing])
+    store.upsert(seeding.embedding_records)
 
     llm = FakeLLM()
     embedding = FakeEmbeddingClient(

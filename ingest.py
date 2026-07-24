@@ -31,18 +31,10 @@ def main() -> None:
 
         sync_result = synchronize_documents(
             documents,
-            runtime.graph_store,
-            runtime.chunk_store,
+            runtime.corpus_stores,
             runtime.fast_llm,
-            knowledge_base_store=runtime.knowledge_base_store,
-            graph_embedding_store=runtime.graph_embedding_store,
-            knowledge_base_embedding_store=(
-                runtime.knowledge_base_embedding_store
-            ),
-            chunk_embedding_store=runtime.chunk_embedding_store,
             chunk_extraction_store=runtime.chunk_extraction_store,
             dropped_edges_path=runtime.paths.dropped_edges_path,
-            taxonomy_suggestion_store=runtime.taxonomy_suggestion_store,
             min_candidate_similarity=(
                 config.entity_resolution_min_candidate_similarity
             ),

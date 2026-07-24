@@ -22,6 +22,17 @@
 
 ### Changed
 
+- Moved per-document and canonical knowledge graphs from whole-file JSON storage
+  to normalized, incrementally updated SQLite tables.
+- Added indexed node and edge contribution storage so changed sources affect only
+  their own provenance and dependent canonical records.
+- Changed node and chunk embedding persistence to targeted upserts and deletes.
+- Committed graph, chunk, taxonomy, and embedding updates through one shared
+  SQLite transaction and deferred embedding writes until final persistence.
+- Replaced full-table knowledge-base comparisons during synchronization with
+  source-scoped canonical node and edge deltas.
+- Reused normalized `float32` candidate matrices during exact semantic entity
+  resolution and added deterministic partial top-k selection.
 - Consolidated knowledge-base retrieval behind a single hybrid runtime search API.
 - Replaced the single Azure OpenAI model configuration with separate text and
   embedding deployment settings.

@@ -173,13 +173,13 @@ def _normalized_names(node: Node) -> set[str]:
     return {
         normalized
         for normalized in (
-            _normalize_name(name) for name in [node.label, *node.aliases]
+            normalized_entity_name(name) for name in [node.label, *node.aliases]
         )
         if normalized
     }
 
 
-def _normalize_name(value: str) -> str:
+def normalized_entity_name(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
     return " ".join(_singularize_word(word) for word in normalized.split())
 

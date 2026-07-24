@@ -71,9 +71,11 @@ def semantic_similarity_scores(
 ) -> dict[str, float]:
     if query_vector is None:
         return {}
+    positive_scores = {
+        item_id: score
+        for item_id, vector in vectors.items()
+        if (score := cosine_similarity(query_vector, vector)) > 0.0
+    }
     return min_max_normalize_scores(
-        {
-            item_id: cosine_similarity(query_vector, vector)
-            for item_id, vector in vectors.items()
-        }
+        positive_scores
     )

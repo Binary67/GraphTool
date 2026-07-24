@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from graphtool.storage import as_connection, decode_vector, encode_vector
+from graphtool.storage import as_connection, decode_vector, encode_vector, transaction
 
 
 class NodeEmbeddingRecord(BaseModel):
@@ -32,23 +32,40 @@ class SqliteEmbeddingStore:
     ) -> None:
         self._conn = as_connection(conn_or_path)
 
-    def save(self, records: Mapping[str, NodeEmbeddingRecord]) -> None:
-        rows = [
-            (
-                record.node_id,
-                record.embedding_model,
-                record.embedding_input_hash,
-                encode_vector(record.vector),
-            )
-            for record in records.values()
-        ]
-        with self._conn:
-            self._conn.execute("DELETE FROM kb_node_embeddings")
+    def upsert(self, records: Mapping[str, NodeEmbeddingRecord]) -> None:
+        with transaction(self._conn):
             self._conn.executemany(
                 "INSERT INTO kb_node_embeddings "
                 "(node_id, embedding_model, embedding_input_hash, vector) "
-                "VALUES (?, ?, ?, ?)",
-                rows,
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(node_id) DO UPDATE SET "
+                "embedding_model = excluded.embedding_model, "
+                "embedding_input_hash = excluded.embedding_input_hash, "
+                "vector = excluded.vector "
+                "WHERE embedding_model <> excluded.embedding_model "
+                "OR embedding_input_hash <> excluded.embedding_input_hash "
+                "OR vector <> excluded.vector",
+                [
+                    (
+                        record.node_id,
+                        record.embedding_model,
+                        record.embedding_input_hash,
+                        encode_vector(record.vector),
+                    )
+                    for record in records.values()
+                ],
+            )
+
+    def replace_all(self, records: Mapping[str, NodeEmbeddingRecord]) -> None:
+        with transaction(self._conn):
+            self._conn.execute("DELETE FROM kb_node_embeddings")
+            self.upsert(records)
+
+    def delete(self, node_ids: set[str]) -> None:
+        with transaction(self._conn):
+            self._conn.executemany(
+                "DELETE FROM kb_node_embeddings WHERE node_id = ?",
+                [(node_id,) for node_id in node_ids],
             )
 
     def load(self) -> dict[str, NodeEmbeddingRecord]:
@@ -74,26 +91,30 @@ class SqliteGraphEmbeddingStore:
     ) -> None:
         self._conn = as_connection(conn_or_path)
 
-    def save(self, source: str, records: Mapping[str, NodeEmbeddingRecord]) -> None:
-        rows = [
-            (
-                source,
-                record.node_id,
-                record.embedding_model,
-                record.embedding_input_hash,
-                encode_vector(record.vector),
-            )
-            for record in records.values()
-        ]
-        with self._conn:
+    def replace_source(
+        self,
+        source: str,
+        records: Mapping[str, NodeEmbeddingRecord],
+    ) -> None:
+        with transaction(self._conn):
             self._conn.execute(
-                "DELETE FROM graph_node_embeddings WHERE source = ?", (source,)
+                "DELETE FROM graph_node_embeddings WHERE source = ?",
+                (source,),
             )
             self._conn.executemany(
                 "INSERT INTO graph_node_embeddings "
                 "(source, node_id, embedding_model, embedding_input_hash, vector) "
                 "VALUES (?, ?, ?, ?, ?)",
-                rows,
+                [
+                    (
+                        source,
+                        record.node_id,
+                        record.embedding_model,
+                        record.embedding_input_hash,
+                        encode_vector(record.vector),
+                    )
+                    for record in records.values()
+                ],
             )
 
     def load(self, source: str) -> dict[str, NodeEmbeddingRecord]:
@@ -113,7 +134,7 @@ class SqliteGraphEmbeddingStore:
         return bool(row[0])
 
     def delete(self, source: str) -> None:
-        with self._conn:
+        with transaction(self._conn):
             self._conn.execute(
                 "DELETE FROM graph_node_embeddings WHERE source = ?", (source,)
             )
@@ -131,6 +152,3 @@ class _SourceScopedEmbeddingStore:
 
     def load(self) -> dict[str, NodeEmbeddingRecord]:
         return self._store.load(self._source)
-
-    def save(self, records: Mapping[str, NodeEmbeddingRecord]) -> None:
-        self._store.save(self._source, records)

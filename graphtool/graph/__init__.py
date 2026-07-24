@@ -9,7 +9,10 @@ from graphtool.graph.embedding_store import (
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
+from graphtool.graph.sqlite_store import (
+    SqliteGraphStore,
+    SqliteKnowledgeBaseStore,
+)
 from graphtool.graph.provenance import filter_knowledge_graph_by_source
 from graphtool.graph.resolver import SemanticEntityResolver
 from graphtool.graph.taxonomy import (
@@ -48,8 +51,8 @@ __all__ = [
     "JsonChunkExtractionStore",
     "SqliteEmbeddingStore",
     "SqliteGraphEmbeddingStore",
-    "JsonGraphStore",
-    "JsonKnowledgeBaseStore",
+    "SqliteGraphStore",
+    "SqliteKnowledgeBaseStore",
     "JsonNodeTypeRegistryStore",
     "JsonTaxonomyPromotionAuditStore",
     "SqliteTaxonomySuggestionStore",

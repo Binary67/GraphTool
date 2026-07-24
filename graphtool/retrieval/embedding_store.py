@@ -6,7 +6,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from graphtool.storage import as_connection, decode_vector, encode_vector
+from graphtool.storage import as_connection, decode_vector, encode_vector, transaction
 
 # Keeps DELETE ... IN (...) statements under SQLite's bound-variable limit.
 _DELETE_BATCH_SIZE = 500
@@ -23,7 +23,7 @@ class ChunkEmbeddingStore(Protocol):
     def load(self) -> dict[str, ChunkEmbeddingRecord]:
         ...
 
-    def save(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
+    def upsert(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
         ...
 
     def delete(self, chunk_ids: list[str]) -> None:
@@ -39,23 +39,28 @@ class SqliteChunkEmbeddingStore:
     ) -> None:
         self._conn = as_connection(conn_or_path)
 
-    def save(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
-        rows = [
-            (
-                record.chunk_id,
-                record.embedding_model,
-                record.embedding_input_hash,
-                encode_vector(record.vector),
-            )
-            for record in records.values()
-        ]
-        with self._conn:
-            self._conn.execute("DELETE FROM chunk_embeddings")
+    def upsert(self, records: Mapping[str, ChunkEmbeddingRecord]) -> None:
+        with transaction(self._conn):
             self._conn.executemany(
                 "INSERT INTO chunk_embeddings "
                 "(chunk_id, embedding_model, embedding_input_hash, vector) "
-                "VALUES (?, ?, ?, ?)",
-                rows,
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(chunk_id) DO UPDATE SET "
+                "embedding_model = excluded.embedding_model, "
+                "embedding_input_hash = excluded.embedding_input_hash, "
+                "vector = excluded.vector "
+                "WHERE embedding_model <> excluded.embedding_model "
+                "OR embedding_input_hash <> excluded.embedding_input_hash "
+                "OR vector <> excluded.vector",
+                [
+                    (
+                        record.chunk_id,
+                        record.embedding_model,
+                        record.embedding_input_hash,
+                        encode_vector(record.vector),
+                    )
+                    for record in records.values()
+                ],
             )
 
     def load(self) -> dict[str, ChunkEmbeddingRecord]:
@@ -82,7 +87,7 @@ class SqliteChunkEmbeddingStore:
     def delete(self, chunk_ids: list[str]) -> None:
         if not chunk_ids:
             return
-        with self._conn:
+        with transaction(self._conn):
             for start in range(0, len(chunk_ids), _DELETE_BATCH_SIZE):
                 batch = chunk_ids[start : start + _DELETE_BATCH_SIZE]
                 placeholders = ",".join("?" for _ in batch)

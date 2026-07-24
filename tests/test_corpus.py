@@ -5,33 +5,36 @@ from typing import TypeVar
 
 import pytest
 
-from graphtool.chunking.store import SqliteChunkStore
 from graphtool.chunking.types import Chunk
 from graphtool.corpus import (
     rebuild_knowledge_base,
     synchronize_documents,
 )
+from graphtool.corpus_stores import SqliteCorpusStores
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.extraction_store import (
     ExtractedEdge as _ExtractedEdge,
     ExtractedKnowledgeGraph as _ExtractedKnowledgeGraph,
     ExtractedNode as _ExtractedNode,
 )
-from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
-from graphtool.graph.embedding_store import SqliteEmbeddingStore, SqliteGraphEmbeddingStore
 from graphtool.graph.resolver import EntityResolutionDecision, SemanticEntityResolver
 from graphtool.graph.taxonomy import (
-    SqliteTaxonomySuggestionStore,
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import Edge, GraphMetadata, KnowledgeGraph, Node
 from graphtool.llm.types import LLMMessage
-from graphtool.retrieval import ChunkEmbeddingRecord, SqliteChunkEmbeddingStore
+from graphtool.retrieval import ChunkEmbeddingRecord
 from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import document_content_hash, source_key
 from graphtool.storage import open_database
 
 T = TypeVar("T")
+
+
+def _stores(tmp_path) -> SqliteCorpusStores:
+    return SqliteCorpusStores.from_connection(
+        open_database(tmp_path / "graphtool.db")
+    )
 
 
 class FakeLLM:
@@ -197,20 +200,19 @@ def _relationship_graph(
 
 
 def test_synchronize_documents_skips_unchanged_sources(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
     graph_store.save(_graph("docs/processed.md", chunk, "processed", "Processed"))
-    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    rebuild_knowledge_base(stores)
     fake = FakeLLM([])
 
     result = synchronize_documents(
         {"docs/processed.md": "# Processed\nText."},
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
     )
 
     assert result.unchanged_sources == ["docs/processed.md"]
@@ -221,9 +223,10 @@ def test_synchronize_documents_skips_unchanged_sources(tmp_path):
 
 
 def test_synchronize_documents_rebuilds_legacy_ingestion_fingerprint(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     source = "docs/processed.md"
     content = "# Processed\nText."
     chunk = _chunk(source, content, "Processed")
@@ -239,15 +242,13 @@ def test_synchronize_documents_rebuilds_legacy_ingestion_fingerprint(tmp_path):
         )
     )
     chunk_store.save(source, [chunk])
-    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    rebuild_knowledge_base(stores)
     fake = FakeLLM([_extracted_graph([])])
 
     result = synchronize_documents(
         {source: content},
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
     )
 
     assert result.changed_sources == [source]
@@ -260,9 +261,10 @@ def test_synchronize_documents_rebuilds_legacy_ingestion_fingerprint(tmp_path):
 def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_cache(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
     source = "docs/guide.md"
     first_section = f"# First\n{'alpha ' * 4100}"
@@ -280,10 +282,8 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
     )
     synchronize_documents(
         {source: original},
-        graph_store,
-        chunk_store,
+        stores,
         initial,
-        knowledge_base_store=knowledge_base_store,
         chunk_extraction_store=extraction_store,
         chunk_generation_workers=1,
     )
@@ -298,10 +298,8 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
 
     result = synchronize_documents(
         {source: replacement},
-        graph_store,
-        chunk_store,
+        stores,
         changed,
-        knowledge_base_store=knowledge_base_store,
         chunk_extraction_store=extraction_store,
         chunk_generation_workers=1,
     )
@@ -317,10 +315,8 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
 
     synchronize_documents(
         {},
-        graph_store,
-        chunk_store,
+        stores,
         FakeLLM([]),
-        knowledge_base_store=knowledge_base_store,
         chunk_extraction_store=extraction_store,
     )
 
@@ -328,9 +324,10 @@ def test_synchronize_documents_reuses_unchanged_chunk_extractions_and_deletes_ca
 
 
 def test_synchronize_documents_forwards_chunk_generation_worker_validation(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
 
     with pytest.raises(
         ValueError,
@@ -338,10 +335,8 @@ def test_synchronize_documents_forwards_chunk_generation_worker_validation(tmp_p
     ):
         synchronize_documents(
             {"docs/new.md": "# New\nText."},
-            graph_store,
-            chunk_store,
+            stores,
             FakeLLM([]),
-            knowledge_base_store=knowledge_base_store,
             chunk_generation_workers=0,
         )
 
@@ -354,8 +349,9 @@ def test_synchronize_documents_adds_only_pending_source(
     monkeypatch,
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
     processed_chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
     graph_store.save(
         _graph("docs/processed.md", processed_chunk, "processed", "Processed")
@@ -376,12 +372,8 @@ def test_synchronize_documents_adds_only_pending_source(
             "docs/processed.md": "# Processed\nText.",
             "docs/pending.md": "# Pending\nNeeds validation.",
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=JsonKnowledgeBaseStore(
-            tmp_path / "knowledge_base.json"
-        ),
     )
 
     assert result.added_sources == ["docs/pending.md"]
@@ -406,12 +398,13 @@ def test_synchronize_documents_adds_only_pending_source(
 def test_synchronize_without_semantic_resolver_preserves_scoped_knowledge_base_nodes(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     existing_graph = _relationship_graph("docs/existing.md", "existing-chunk-0000")
     graph_store.save(existing_graph)
-    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    rebuild_knowledge_base(stores)
     fake = FakeLLM(
         [
             _extracted_graph(
@@ -442,10 +435,8 @@ def test_synchronize_without_semantic_resolver_preserves_scoped_knowledge_base_n
             "docs/existing.md": "# Existing\nGraphTool uses Azure OpenAI.",
             new_source: "# GraphTool\nUses Azure OpenAI.",
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
     )
 
     graph = knowledge_base_store.load()
@@ -466,9 +457,10 @@ def test_synchronize_without_semantic_resolver_preserves_scoped_knowledge_base_n
 
 
 def test_synchronize_scopes_reused_node_refs_across_documents(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     fake = FakeLLM(
         [
             _extracted_graph(
@@ -501,10 +493,8 @@ def test_synchronize_scopes_reused_node_refs_across_documents(tmp_path):
             first_source: "# OpenAI\nAI company.",
             second_source: "# Anthropic\nAI company.",
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
     )
 
     graph = knowledge_base_store.load()
@@ -515,8 +505,9 @@ def test_synchronize_scopes_reused_node_refs_across_documents(tmp_path):
 
 
 def test_rebuild_knowledge_base_resolves_only_across_document_graphs(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    knowledge_base_store = stores.knowledge_base
     created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
     graph_store.save(
         KnowledgeGraph(
@@ -559,8 +550,7 @@ def test_rebuild_knowledge_base_resolves_only_across_document_graphs(tmp_path):
     )
 
     graph = rebuild_knowledge_base(
-        graph_store,
-        knowledge_base_store,
+        stores,
         resolver=resolver,
     )
 
@@ -577,15 +567,12 @@ def test_rebuild_knowledge_base_resolves_only_across_document_graphs(tmp_path):
 def test_synchronize_documents_updates_cached_knowledge_base_semantically(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    graph_embedding_store = SqliteGraphEmbeddingStore(
-        open_database(tmp_path / "graph_embeddings.db")
-    )
-    knowledge_base_embedding_store = SqliteEmbeddingStore(
-        open_database(tmp_path / "knowledge_base_embeddings.db")
-    )
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
     existing_chunk_id = "existing-chunk-0000"
     existing_graph = KnowledgeGraph(
         nodes=[
@@ -618,7 +605,7 @@ def test_synchronize_documents_updates_cached_knowledge_base_semantically(
         ),
     )
     graph_store.save(existing_graph)
-    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    rebuild_knowledge_base(stores)
     fake = FakeSemanticLLM(
         responses=[
             _extracted_graph(
@@ -666,12 +653,8 @@ def test_synchronize_documents_updates_cached_knowledge_base_semantically(
             "docs/existing.md": "# Existing\nOpenAI develops ChatGPT.",
             new_source: "# OpenAI organization\nDevelops ChatGPT.",
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
     )
 
     graph = knowledge_base_store.load()
@@ -691,15 +674,12 @@ def test_synchronize_documents_updates_cached_knowledge_base_semantically(
 def test_synchronize_documents_reuses_document_embedding_for_knowledge_base(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    graph_embedding_store = SqliteGraphEmbeddingStore(
-        open_database(tmp_path / "graph_embeddings.db")
-    )
-    knowledge_base_embedding_store = SqliteEmbeddingStore(
-        open_database(tmp_path / "knowledge_base_embeddings.db")
-    )
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
     fake = FakeSemanticLLM(
         responses=[
             _extracted_graph(
@@ -712,12 +692,8 @@ def test_synchronize_documents_reuses_document_embedding_for_knowledge_base(
 
     synchronize_documents(
         {"docs/alpha.md": "# Alpha\nAlpha."},
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
     )
 
     assert fake.embedding_calls == ["label: Alpha\ntype: concept"]
@@ -726,15 +702,12 @@ def test_synchronize_documents_reuses_document_embedding_for_knowledge_base(
 def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    graph_embedding_store = SqliteGraphEmbeddingStore(
-        open_database(tmp_path / "graph_embeddings.db")
-    )
-    knowledge_base_embedding_store = SqliteEmbeddingStore(
-        open_database(tmp_path / "knowledge_base_embeddings.db")
-    )
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
     existing_graph = KnowledgeGraph(
         nodes=[
             Node(
@@ -752,7 +725,7 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
         ),
     )
     graph_store.save(existing_graph)
-    rebuild_knowledge_base(graph_store, knowledge_base_store)
+    rebuild_knowledge_base(stores)
     fake = FakeSemanticLLM(
         responses=[
             _extracted_graph(
@@ -793,12 +766,8 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
             "docs/existing.md": "# Existing\nOpenAI.",
             new_source: new_markdown,
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
         min_candidate_similarity=1.0,
         chunk_generation_workers=1,
     )
@@ -825,9 +794,10 @@ def test_synchronize_documents_uses_min_candidate_similarity_for_resolvers(
 
 
 def test_synchronize_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     processed_chunk = _chunk("docs/processed.md", "# Processed\nText.", "Processed")
     graph_store.save(
         _graph("docs/processed.md", processed_chunk, "processed", "Processed")
@@ -845,10 +815,8 @@ def test_synchronize_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
             "docs/processed.md": "# Processed\nText.",
             "docs/pending.md": "# Pending\nNeeds validation.",
         },
-        graph_store,
-        chunk_store,
+        stores,
         fake,
-        knowledge_base_store=knowledge_base_store,
     )
 
     graph = knowledge_base_store.load()
@@ -862,21 +830,14 @@ def test_synchronize_documents_rebuilds_missing_knowledge_base_cache(tmp_path):
 def test_synchronize_changed_document_replaces_only_its_contributions_and_caches(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    graph_embedding_store = SqliteGraphEmbeddingStore(
-        open_database(tmp_path / "graph_embeddings.db")
-    )
-    knowledge_base_embedding_store = SqliteEmbeddingStore(
-        open_database(tmp_path / "knowledge_base_embeddings.db")
-    )
-    chunk_embedding_store = SqliteChunkEmbeddingStore(
-        open_database(tmp_path / "chunk_embeddings.db")
-    )
-    taxonomy_store = SqliteTaxonomySuggestionStore(
-        open_database(tmp_path / "taxonomy_suggestions.db")
-    )
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
+    chunk_embedding_store = stores.chunk_embeddings
+    taxonomy_store = stores.taxonomy_suggestions
     source_a = "docs/a.md"
     source_b = "docs/b.md"
     original_a = "# A\nShared has Old A."
@@ -917,18 +878,12 @@ def test_synchronize_changed_document_replaces_only_its_contributions_and_caches
     )
     synchronize_documents(
         {source_a: original_a, source_b: content_b},
-        graph_store,
-        chunk_store,
+        stores,
         initial,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
-        chunk_embedding_store=chunk_embedding_store,
-        taxonomy_suggestion_store=taxonomy_store,
     )
     old_a_chunk_id = f"{source_key(source_a)}-chunk-0000"
     b_chunk_id = f"{source_key(source_b)}-chunk-0000"
-    chunk_embedding_store.save(
+    chunk_embedding_store.upsert(
         {
             old_a_chunk_id: ChunkEmbeddingRecord(
                 chunk_id=old_a_chunk_id,
@@ -999,14 +954,8 @@ def test_synchronize_changed_document_replaces_only_its_contributions_and_caches
 
     result = synchronize_documents(
         {source_a: replacement_a, source_b: content_b},
-        graph_store,
-        chunk_store,
+        stores,
         changed,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
-        chunk_embedding_store=chunk_embedding_store,
-        taxonomy_suggestion_store=taxonomy_store,
     )
 
     graph = knowledge_base_store.load()
@@ -1027,9 +976,10 @@ def test_synchronize_changed_document_replaces_only_its_contributions_and_caches
 
 
 def test_changed_local_node_id_does_not_overwrite_surviving_shared_entity(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     source_a = "docs/a.md"
     source_b = "docs/b.md"
     content_b = "# B\nShared."
@@ -1047,10 +997,8 @@ def test_changed_local_node_id_does_not_overwrite_surviving_shared_entity(tmp_pa
     )
     synchronize_documents(
         {source_a: "# A\nShared.", source_b: content_b},
-        graph_store,
-        chunk_store,
+        stores,
         initial,
-        knowledge_base_store=knowledge_base_store,
     )
     shared_id = knowledge_base_store.load().nodes[0].id
     changed = FakeSemanticLLM(
@@ -1071,10 +1019,8 @@ def test_changed_local_node_id_does_not_overwrite_surviving_shared_entity(tmp_pa
 
     synchronize_documents(
         {source_a: "# A\nDifferent.", source_b: content_b},
-        graph_store,
-        chunk_store,
+        stores,
         changed,
-        knowledge_base_store=knowledge_base_store,
     )
 
     graph = knowledge_base_store.load()
@@ -1086,15 +1032,12 @@ def test_changed_local_node_id_does_not_overwrite_surviving_shared_entity(tmp_pa
 def test_synchronize_deleted_document_removes_artifacts_but_keeps_shared_nodes(
     tmp_path,
 ):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
-    graph_embedding_store = SqliteGraphEmbeddingStore(
-        open_database(tmp_path / "graph_embeddings.db")
-    )
-    knowledge_base_embedding_store = SqliteEmbeddingStore(
-        open_database(tmp_path / "knowledge_base_embeddings.db")
-    )
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
     source_a = "docs/a.md"
     source_b = "docs/b.md"
     initial = FakeSemanticLLM(
@@ -1117,12 +1060,8 @@ def test_synchronize_deleted_document_removes_artifacts_but_keeps_shared_nodes(
     )
     synchronize_documents(
         {source_a: "# A\nShared and A.", source_b: "# B\nShared and B."},
-        graph_store,
-        chunk_store,
+        stores,
         initial,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
     )
     shared_id = next(
         node.id
@@ -1133,12 +1072,8 @@ def test_synchronize_deleted_document_removes_artifacts_but_keeps_shared_nodes(
 
     result = synchronize_documents(
         {source_b: "# B\nShared and B."},
-        graph_store,
-        chunk_store,
+        stores,
         deleting,
-        knowledge_base_store=knowledge_base_store,
-        graph_embedding_store=graph_embedding_store,
-        knowledge_base_embedding_store=knowledge_base_embedding_store,
     )
 
     graph = knowledge_base_store.load()
@@ -1156,16 +1091,16 @@ def test_synchronize_deleted_document_removes_artifacts_but_keeps_shared_nodes(
 
 
 def test_synchronize_rename_is_delete_plus_add(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     old_source = "docs/old.md"
     new_source = "docs/new.md"
     content = "# Document\nContent."
     synchronize_documents(
         {old_source: content},
-        graph_store,
-        chunk_store,
+        stores,
         FakeLLM(
             [
                 _extracted_graph(
@@ -1173,13 +1108,11 @@ def test_synchronize_rename_is_delete_plus_add(tmp_path):
                 )
             ]
         ),
-        knowledge_base_store=knowledge_base_store,
     )
 
     result = synchronize_documents(
         {new_source: content},
-        graph_store,
-        chunk_store,
+        stores,
         FakeLLM(
             [
                 _extracted_graph(
@@ -1187,7 +1120,6 @@ def test_synchronize_rename_is_delete_plus_add(tmp_path):
                 )
             ]
         ),
-        knowledge_base_store=knowledge_base_store,
     )
 
     assert result.added_sources == [new_source]
@@ -1197,20 +1129,19 @@ def test_synchronize_rename_is_delete_plus_add(tmp_path):
 
 
 def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
-    graph_store = JsonGraphStore(tmp_path / "graphs")
-    chunk_store = SqliteChunkStore(open_database(tmp_path / "chunks.db"))
-    knowledge_base_store = JsonKnowledgeBaseStore(tmp_path / "knowledge_base.json")
+    stores = _stores(tmp_path)
+    graph_store = stores.graphs
+    chunk_store = stores.chunks
+    knowledge_base_store = stores.knowledge_base
     extraction_store = JsonChunkExtractionStore(tmp_path / "chunk_extractions")
     source = "docs/a.md"
     original = "# A\nOriginal."
     synchronize_documents(
         {source: original},
-        graph_store,
-        chunk_store,
+        stores,
         FakeLLM(
             [_extracted_graph([_ExtractedNode(ref="a", label="A", type="concept")])]
         ),
-        knowledge_base_store=knowledge_base_store,
         chunk_extraction_store=extraction_store,
     )
     original_graph = graph_store.load(source)
@@ -1220,10 +1151,8 @@ def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
     with pytest.raises(RuntimeError, match="extraction failed"):
         synchronize_documents(
             {source: "# A\nReplacement."},
-            graph_store,
-            chunk_store,
+            stores,
             FailingLLM(),
-            knowledge_base_store=knowledge_base_store,
             chunk_extraction_store=extraction_store,
         )
 
@@ -1231,3 +1160,61 @@ def test_failed_changed_document_extraction_preserves_active_data(tmp_path):
     assert knowledge_base_store.load() == original_knowledge_base
     assert chunk_store.load(source)[0].text == original
     assert extraction_store.load(source) == original_extractions
+
+
+def test_failed_final_write_rolls_back_all_sqlite_stores(monkeypatch, tmp_path):
+    stores = _stores(tmp_path)
+    source = "docs/a.md"
+    initial = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                [_ExtractedNode(ref="a", label="Alpha", type="concept")]
+            )
+        ],
+        decisions=[],
+        vectors={"Alpha": [1.0, 0.0]},
+    )
+    synchronize_documents(
+        {source: "# Alpha\nOriginal."},
+        stores,
+        initial,
+    )
+    original_graph = stores.graphs.load(source)
+    original_knowledge_base = stores.knowledge_base.load()
+    original_chunks = stores.chunks.load(source)
+    original_graph_embeddings = stores.graph_embeddings.load(source)
+    original_knowledge_embeddings = stores.knowledge_base_embeddings.load()
+    changed = FakeSemanticLLM(
+        responses=[
+            _extracted_graph(
+                [_ExtractedNode(ref="b", label="Beta", type="concept")]
+            )
+        ],
+        decisions=[],
+        vectors={"Beta": [0.0, 1.0]},
+    )
+
+    def fail_apply_delta(_delta):
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(
+        stores.knowledge_base,
+        "apply_delta",
+        fail_apply_delta,
+    )
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        synchronize_documents(
+            {source: "# Beta\nReplacement."},
+            stores,
+            changed,
+        )
+
+    assert stores.graphs.load(source) == original_graph
+    assert stores.knowledge_base.load() == original_knowledge_base
+    assert stores.chunks.load(source) == original_chunks
+    assert stores.graph_embeddings.load(source) == original_graph_embeddings
+    assert (
+        stores.knowledge_base_embeddings.load()
+        == original_knowledge_embeddings
+    )

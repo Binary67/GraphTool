@@ -3,31 +3,29 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from graphtool.chunking.store import SqliteChunkStore
 from graphtool.chunking.markdown import chunk_markdown
 from graphtool.chunking.types import Chunk
+from graphtool.corpus_stores import SqliteCorpusStores
 from graphtool.graph.embedding_store import (
     NodeEmbeddingRecord,
-    SqliteEmbeddingStore,
     SqliteGraphEmbeddingStore,
 )
 from graphtool.graph.extraction_store import JsonChunkExtractionStore
 from graphtool.graph.combiner import combine_knowledge_graphs
 from graphtool.graph.generator import generate_knowledge_graph
-from graphtool.graph.json_store import JsonGraphStore, JsonKnowledgeBaseStore
-from graphtool.graph.provenance import remove_source_from_knowledge_graph
+from graphtool.graph.sqlite_store import (
+    KnowledgeBaseDelta,
+)
 from graphtool.graph.resolution_embeddings import EmbeddingStore
 from graphtool.graph.resolver import (
     DEFAULT_MIN_CANDIDATE_SIMILARITY,
     SemanticEntityResolver,
 )
 from graphtool.graph.taxonomy import (
-    SqliteTaxonomySuggestionStore,
     TaxonomySuggestionRecord,
 )
 from graphtool.graph.types import KnowledgeGraph
 from graphtool.llm.base import LLMClient
-from graphtool.retrieval.embedding_store import ChunkEmbeddingStore
 from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import document_content_hash
 
@@ -47,6 +45,7 @@ class _PreparedDocument:
     source: str
     chunks: list[Chunk]
     graph: KnowledgeGraph
+    embedding_records: dict[str, NodeEmbeddingRecord]
     taxonomy_suggestions: list[TaxonomySuggestionRecord]
 
 
@@ -60,16 +59,10 @@ class _TaxonomySuggestionBuffer:
 
 def synchronize_documents(
     documents: Mapping[str, str],
-    graph_store: JsonGraphStore,
-    chunk_store: SqliteChunkStore,
+    stores: SqliteCorpusStores,
     llm: LLMClient,
     *,
-    knowledge_base_store: JsonKnowledgeBaseStore,
-    graph_embedding_store: SqliteGraphEmbeddingStore | None = None,
-    knowledge_base_embedding_store: SqliteEmbeddingStore | None = None,
-    chunk_embedding_store: ChunkEmbeddingStore | None = None,
     dropped_edges_path: Path | None = None,
-    taxonomy_suggestion_store: SqliteTaxonomySuggestionStore | None = None,
     chunk_extraction_store: JsonChunkExtractionStore | None = None,
     min_candidate_similarity: float = DEFAULT_MIN_CANDIDATE_SIMILARITY,
     chunk_generation_workers: int = 4,
@@ -77,12 +70,18 @@ def synchronize_documents(
     if chunk_generation_workers < 1:
         raise ValueError("chunk_generation_workers must be positive")
 
-    existing_graphs = graph_store.load_all()
-    existing_by_source = {}
-    for graph in existing_graphs:
-        if graph.metadata is None:
-            raise ValueError("Cannot synchronize graph without metadata.source.")
-        existing_by_source[graph.metadata.source] = graph
+    graph_store = stores.graphs
+    knowledge_base_store = stores.knowledge_base
+    graph_embedding_store = stores.graph_embeddings
+    knowledge_base_embedding_store = stores.knowledge_base_embeddings
+    chunk_store = stores.chunks
+    chunk_embedding_store = stores.chunk_embeddings
+    taxonomy_suggestion_store = stores.taxonomy_suggestions
+
+    existing_by_source = {
+        metadata.source: metadata
+        for metadata in graph_store.load_metadata()
+    }
 
     content_hashes = {
         source: document_content_hash(markdown)
@@ -95,7 +94,7 @@ def synchronize_documents(
     changed_sources = sorted(
         source
         for source in current_sources & existing_sources
-        if existing_by_source[source].metadata.content_hash != content_hashes[source]
+        if existing_by_source[source].content_hash != content_hashes[source]
     )
     unchanged_sources = sorted(
         current_sources - set(added_sources) - set(changed_sources)
@@ -123,16 +122,10 @@ def synchronize_documents(
         )
         resolver = _make_semantic_resolver(
             llm,
-            graph_embedding_store.for_source(source)
-            if graph_embedding_store is not None
-            else None,
+            graph_embedding_store.for_source(source),
             min_candidate_similarity=min_candidate_similarity,
         )
-        suggestion_buffer = (
-            _TaxonomySuggestionBuffer()
-            if taxonomy_suggestion_store is not None
-            else None
-        )
+        suggestion_buffer = _TaxonomySuggestionBuffer()
         graph = generate_knowledge_graph(
             chunks,
             source,
@@ -157,11 +150,10 @@ def synchronize_documents(
                 source=source,
                 chunks=chunks,
                 graph=graph,
-                taxonomy_suggestions=(
-                    list(suggestion_buffer.records)
-                    if suggestion_buffer is not None
-                    else []
+                embedding_records=(
+                    resolver.embedding_records if resolver is not None else {}
                 ),
+                taxonomy_suggestions=list(suggestion_buffer.records),
             )
         )
 
@@ -181,27 +173,39 @@ def synchronize_documents(
         for chunk in chunk_store.load(source)
     ]
 
+    knowledge_base_exists = knowledge_base_store.exists()
     reusable_embedding_sources = (
         sources_to_prepare
-        if knowledge_base_store.exists()
+        if knowledge_base_exists
         else sorted(current_sources)
     )
     resolver = _make_semantic_resolver(
         llm,
         knowledge_base_embedding_store,
         min_candidate_similarity=min_candidate_similarity,
-        reusable_embedding_records=_load_document_embedding_records(
-            graph_embedding_store,
-            reusable_embedding_sources,
-        ),
+        reusable_embedding_records=[
+            *(
+                record
+                for item in prepared
+                for record in item.embedding_records.values()
+            ),
+            *_load_document_embedding_records(
+                graph_embedding_store,
+                [
+                    source
+                    for source in reusable_embedding_sources
+                    if source not in sources_to_prepare
+                ],
+            ),
+        ],
     )
-    if knowledge_base_store.exists():
-        knowledge_base = knowledge_base_store.load()
-        for source in removed_sources:
-            knowledge_base = remove_source_from_knowledge_graph(
-                knowledge_base,
-                source,
-            )
+    if knowledge_base_exists:
+        old_node_ids, old_edge_ids = knowledge_base_store.affected_ids(
+            removed_sources
+        )
+        knowledge_base = knowledge_base_store.load_excluding_sources(
+            removed_sources
+        )
         if resolver is not None:
             knowledge_base = resolver.combine_into(
                 knowledge_base,
@@ -212,50 +216,114 @@ def synchronize_documents(
                 [knowledge_base, *(item.graph for item in prepared)]
             )
     else:
+        old_node_ids, old_edge_ids = set(), set()
         final_graphs = [
-            graph
-            for source, graph in existing_by_source.items()
+            graph_store.load(source)
+            for source in existing_by_source
             if source not in removed_sources
         ]
         final_graphs.extend(item.graph for item in prepared)
         knowledge_base = _combine_knowledge_graphs(final_graphs, resolver)
 
-    for source in deleted_sources:
-        graph_store.delete(source)
-        chunk_store.delete(source)
-        if graph_embedding_store is not None:
+    if knowledge_base_exists:
+        changed_source_set = set(sources_to_prepare)
+        new_node_ids = {
+            node.id
+            for node in knowledge_base.nodes
+            if any(
+                provenance.source in changed_source_set
+                for provenance in node.provenance
+            )
+        }
+        new_edge_ids = {
+            edge.id
+            for edge in knowledge_base.edges
+            if any(
+                provenance.source in changed_source_set
+                for provenance in edge.provenance
+            )
+        }
+        affected_node_ids = old_node_ids | new_node_ids
+        affected_edge_ids = old_edge_ids | new_edge_ids
+        nodes_by_id = {node.id: node for node in knowledge_base.nodes}
+        edges_by_id = {edge.id: edge for edge in knowledge_base.edges}
+        knowledge_base_delta = KnowledgeBaseDelta(
+            upserted_nodes=[
+                nodes_by_id[node_id]
+                for node_id in affected_node_ids
+                if node_id in nodes_by_id
+            ],
+            deleted_node_ids=affected_node_ids - set(nodes_by_id),
+            upserted_edges=[
+                edges_by_id[edge_id]
+                for edge_id in affected_edge_ids
+                if edge_id in edges_by_id
+            ],
+            deleted_edge_ids=affected_edge_ids - set(edges_by_id),
+        )
+    else:
+        affected_node_ids = {node.id for node in knowledge_base.nodes}
+        knowledge_base_delta = None
+
+    knowledge_embedding_records = (
+        resolver.embedding_records if resolver is not None else {}
+    )
+    with stores.transaction():
+        for source in deleted_sources:
+            graph_store.delete(source)
+            chunk_store.delete(source)
             graph_embedding_store.delete(source)
-        if chunk_extraction_store is not None:
-            chunk_extraction_store.delete(source)
-        if taxonomy_suggestion_store is not None:
+            if chunk_extraction_store is not None:
+                chunk_extraction_store.delete(source)
             taxonomy_suggestion_store.delete_source(source)
 
-    for item in prepared:
-        chunk_store.save(item.source, item.chunks)
-        graph_store.save(item.graph)
-        if taxonomy_suggestion_store is not None:
+        for item in prepared:
+            chunk_store.save(item.source, item.chunks)
+            graph_store.save(item.graph)
+            graph_embedding_store.replace_source(
+                item.source,
+                item.embedding_records,
+            )
             taxonomy_suggestion_store.replace_source(
                 item.source,
                 item.taxonomy_suggestions,
             )
 
-    if chunk_embedding_store is not None and old_chunk_ids:
-        chunk_embedding_store.delete(old_chunk_ids)
+        if old_chunk_ids:
+            chunk_embedding_store.delete(old_chunk_ids)
 
-    if prepared or deleted_sources or not knowledge_base_store.exists():
-        knowledge_base_store.save(knowledge_base)
+        if knowledge_base_delta is None:
+            knowledge_base_store.replace_all(knowledge_base)
+            knowledge_base_embedding_store.replace_all(
+                knowledge_embedding_records
+            )
+        else:
+            knowledge_base_store.apply_delta(knowledge_base_delta)
+            knowledge_base_embedding_store.delete(
+                affected_node_ids - set(knowledge_embedding_records)
+            )
+            knowledge_base_embedding_store.upsert(
+                {
+                    node_id: knowledge_embedding_records[node_id]
+                    for node_id in affected_node_ids
+                    if node_id in knowledge_embedding_records
+                }
+            )
 
     return result
 
 
 def rebuild_knowledge_base(
-    graph_store: JsonGraphStore,
-    knowledge_base_store: JsonKnowledgeBaseStore,
+    stores: SqliteCorpusStores,
     *,
     resolver: SemanticEntityResolver | None = None,
 ) -> KnowledgeGraph:
-    graph = _combine_knowledge_graphs(graph_store.load_all(), resolver)
-    knowledge_base_store.save(graph)
+    graph = _combine_knowledge_graphs(stores.graphs.load_all(), resolver)
+    with stores.transaction():
+        stores.knowledge_base.replace_all(graph)
+        stores.knowledge_base_embeddings.replace_all(
+            resolver.embedding_records if resolver is not None else {}
+        )
     return graph
 
 
