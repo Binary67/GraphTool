@@ -24,6 +24,19 @@ class LLMMessage:
 
 
 @dataclass(frozen=True)
+class AudioTranscriptSegment:
+    start_milliseconds: int
+    end_milliseconds: int
+    text: str
+
+
+@dataclass(frozen=True)
+class AudioTranscript:
+    text: str
+    segments: tuple[AudioTranscriptSegment, ...]
+
+
+@dataclass(frozen=True)
 class LLMTextResponse:
     content: str
     response_id: str | None = None

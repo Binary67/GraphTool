@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol, TypeVar
 
-from graphtool.llm.types import LLMMessage, LLMTextResponse
+from graphtool.llm.types import AudioTranscript, LLMMessage, LLMTextResponse
 
 T = TypeVar("T")
 
@@ -49,6 +49,8 @@ class AudioTranscriptionClient(Protocol):
         """Return the transcription model or deployment identifier."""
         ...
 
-    def transcribe_audio(self, path: str | Path, *, prompt: str | None = None) -> str:
+    def transcribe_audio(
+        self, path: str | Path, *, prompt: str | None = None
+    ) -> AudioTranscript:
         """Transcribe an audio file without summarizing it."""
         ...

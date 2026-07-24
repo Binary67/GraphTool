@@ -1,14 +1,17 @@
 import hashlib
+import logging
 import math
-import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from graphtool.llm.base import AudioTranscriptionClient
+from graphtool.llm.types import AudioTranscript, AudioTranscriptSegment
+from graphtool.run_logging import LOGGER_NAME
 from graphtool.source import source_key
 
 AUDIO_CHUNK_MILLISECONDS = 20 * 60 * 1000
@@ -17,9 +20,10 @@ AUDIO_SAMPLE_RATE = 16_000
 AUDIO_BITRATE = "64k"
 AUDIO_MAX_CHUNK_BYTES = 24_000_000
 AUDIO_CONTEXT_TAIL_CHARS = 500
-AUDIO_FORMAT_REVISION = 1
-_MIN_OVERLAP_TOKENS = 5
-_MAX_OVERLAP_TOKENS = 100
+AUDIO_FORMAT_REVISION = 2
+AUDIO_TRANSCRIPTION_MAX_ATTEMPTS = 3
+AUDIO_TRANSCRIPTION_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
+RUN_LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 class AudioTranscriptChunk(BaseModel):
@@ -27,6 +31,7 @@ class AudioTranscriptChunk(BaseModel):
     start_milliseconds: int
     end_milliseconds: int
     text: str
+    segments: list[AudioTranscriptSegment] = []
 
 
 class _AudioConversionManifest(BaseModel):
@@ -127,18 +132,24 @@ def convert_audio_to_markdown(
                     source,
                 )
                 prompt = _context_prompt(chunks[-1].text if chunks else None)
-                text = _normalize_transcript(
-                    transcriber.transcribe_audio(chunk_path, prompt=prompt)
+                transcript = _transcribe_with_retry(
+                    transcriber,
+                    chunk_path,
+                    prompt,
+                    source,
+                    index,
                 )
-                if not text:
+                if not transcript.text:
                     raise ValueError(
                         f"Audio transcription for {source!r} chunk {index} was empty."
                     )
+                filtered_segments = _drop_overlap_segments(transcript, index)
                 chunk = AudioTranscriptChunk(
                     index=index,
                     start_milliseconds=start_milliseconds,
                     end_milliseconds=end_milliseconds,
-                    text=text,
+                    text=transcript.text,
+                    segments=filtered_segments,
                 )
                 _write_model_atomic(chunk_cache_path, chunk)
             chunks.append(chunk)
@@ -244,42 +255,71 @@ def _assemble_markdown(
     chunks: list[AudioTranscriptChunk],
 ) -> str:
     blocks = [f"# Transcript: {file_name}"]
-    previous_text = ""
     for chunk in chunks:
-        text = _remove_exact_overlap(previous_text, chunk.text)
+        text = _segment_text_after_overlap(chunk)
         if text:
             blocks.append(
                 f"## {_format_timestamp(chunk.start_milliseconds)}\n\n{text}"
             )
-        previous_text = chunk.text
     return "\n\n".join(blocks).rstrip() + "\n"
 
 
-def _remove_exact_overlap(previous: str, current: str) -> str:
-    if not previous:
-        return current
-    previous_tokens = _normalized_tokens(previous)
-    current_tokens = _normalized_tokens(current)
-    maximum = min(
-        len(previous_tokens),
-        len(current_tokens),
-        _MAX_OVERLAP_TOKENS,
-    )
-    for size in range(maximum, _MIN_OVERLAP_TOKENS - 1, -1):
-        if [token[0] for token in previous_tokens[-size:]] == [
-            token[0] for token in current_tokens[:size]
-        ]:
-            return current[current_tokens[size - 1][1] :].lstrip()
-    return current
+def _segment_text_after_overlap(chunk: AudioTranscriptChunk) -> str:
+    if not chunk.segments:
+        return chunk.text.strip()
+    overlap_start = 0 if chunk.index == 0 else AUDIO_OVERLAP_MILLISECONDS
+    parts = [
+        segment.text
+        for segment in chunk.segments
+        if segment.start_milliseconds >= overlap_start
+    ]
+    if not parts:
+        return ""
+    return "\n".join(parts).strip()
 
 
-def _normalized_tokens(text: str) -> list[tuple[str, int]]:
-    tokens = []
-    for match in re.finditer(r"\S+", text):
-        normalized = re.sub(r"[^\w]+", "", match.group(), flags=re.UNICODE).casefold()
-        if normalized:
-            tokens.append((normalized, match.end()))
-    return tokens
+def _drop_overlap_segments(
+    transcript: AudioTranscript,
+    chunk_index: int,
+) -> list[AudioTranscriptSegment]:
+    overlap_start = 0 if chunk_index == 0 else AUDIO_OVERLAP_MILLISECONDS
+    return [
+        segment
+        for segment in transcript.segments
+        if segment.start_milliseconds >= overlap_start
+    ]
+
+
+def _transcribe_with_retry(
+    transcriber: AudioTranscriptionClient,
+    chunk_path: Path,
+    prompt: str | None,
+    source: str,
+    chunk_index: int,
+) -> AudioTranscript:
+    last_error: Exception | None = None
+    for attempt in range(AUDIO_TRANSCRIPTION_MAX_ATTEMPTS):
+        try:
+            transcript = transcriber.transcribe_audio(chunk_path, prompt=prompt)
+            return AudioTranscript(
+                text=_normalize_transcript(transcript.text),
+                segments=transcript.segments,
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < AUDIO_TRANSCRIPTION_MAX_ATTEMPTS:
+                delay = AUDIO_TRANSCRIPTION_BACKOFF_SECONDS[attempt]
+                RUN_LOGGER.warning(
+                    "Retrying audio transcription source=%s chunk=%s "
+                    "attempt=%s error=%s",
+                    source,
+                    chunk_index,
+                    attempt + 1,
+                    exc,
+                )
+                time.sleep(delay)
+    assert last_error is not None
+    raise last_error
 
 
 def _format_timestamp(milliseconds: int) -> str:

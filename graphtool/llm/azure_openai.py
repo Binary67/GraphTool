@@ -9,6 +9,8 @@ from openai import OpenAI
 
 from graphtool.llm.config import AzureOpenAIConfig
 from graphtool.llm.types import (
+    AudioTranscript,
+    AudioTranscriptSegment,
     LLMImageContent,
     LLMMessage,
     LLMTextContent,
@@ -84,15 +86,23 @@ class AzureOpenAIAudioTranscriber:
         path: str | Path,
         *,
         prompt: str | None = None,
-    ) -> str:
+    ) -> AudioTranscript:
         with Path(path).open("rb") as audio_file:
             response = self._client.audio.transcriptions.create(
                 model=self._deployment,
                 file=audio_file,
                 prompt=prompt,
-                response_format="json",
+                response_format="verbose_json",
             )
-        return response.text
+        segments = tuple(
+            AudioTranscriptSegment(
+                start_milliseconds=round(segment.start * 1000),
+                end_milliseconds=round(segment.end * 1000),
+                text=segment.text,
+            )
+            for segment in response.segments
+        )
+        return AudioTranscript(text=response.text, segments=segments)
 
 
 def create_azure_openai_agent_model(

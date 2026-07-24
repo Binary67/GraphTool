@@ -77,13 +77,29 @@ class FakeAudio:
         self.transcriptions = FakeTranscriptions()
 
 
+class FakeTranscriptionSegment:
+    def __init__(self, start, end, text):
+        self.start = start
+        self.end = end
+        self.text = text
+
+
 class FakeTranscriptions:
     def __init__(self):
         self.create_calls = []
 
     def create(self, **kwargs):
         self.create_calls.append(kwargs)
-        return type("Transcription", (), {"text": "transcribed audio"})()
+        return type(
+            "Transcription",
+            (),
+            {
+                "text": "transcribed audio",
+                "segments": [
+                    FakeTranscriptionSegment(0.0, 1.0, "transcribed audio"),
+                ],
+            },
+        )()
 
 
 class Person(BaseModel):
@@ -171,14 +187,18 @@ def test_transcribes_audio_with_dedicated_deployment(monkeypatch, tmp_path):
     path.write_bytes(b"audio")
 
     transcriber = AzureOpenAIAudioTranscriber(_config())
-    text = transcriber.transcribe_audio(path, prompt="Previous context")
+    transcript = transcriber.transcribe_audio(path, prompt="Previous context")
 
     assert transcriber.transcription_model == "transcription-deployment"
-    assert text == "transcribed audio"
+    assert transcript.text == "transcribed audio"
+    assert len(transcript.segments) == 1
+    assert transcript.segments[0].start_milliseconds == 0
+    assert transcript.segments[0].end_milliseconds == 1000
+    assert transcript.segments[0].text == "transcribed audio"
     call = FakeOpenAI.instances[0].audio.transcriptions.create_calls[0]
     assert call["model"] == "transcription-deployment"
     assert call["prompt"] == "Previous context"
-    assert call["response_format"] == "json"
+    assert call["response_format"] == "verbose_json"
     assert call["file"].name == str(path)
     assert call["file"].closed is True
 
